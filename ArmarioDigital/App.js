@@ -28,6 +28,8 @@ import {
   getSpaces,
   insertItem,
   getItems,
+  updateItemQuantity,
+  deleteItem,
 } from './database';
 
 const Tab = createBottomTabNavigator();
@@ -508,7 +510,7 @@ function EspacosScreen() {
 }
 
 /* ==========================================================
-   ABA 3: INVENTÁRIO (Busca B2B em Tempo Real + Local e Quantidade)
+   ABA 3: INVENTÁRIO (Busca B2B + Giro de Estoque Update/Delete)
    ========================================================== */
 function InventarioScreen() {
   const [itens, setItens] = useState([]);
@@ -534,6 +536,52 @@ function InventarioScreen() {
     }, [carregarItens, searchQuery])
   );
 
+  // (➕) Incrementa a quantidade atual e recarrega a lista imediatamente
+  const handleIncrementar = async (item) => {
+    const qtdAtual = Number(item.quantity ?? 1);
+    try {
+      await updateItemQuantity(item.id, qtdAtual + 1);
+      await carregarItens(searchQuery);
+    } catch (error) {
+      console.error('Erro ao aumentar quantidade:', error);
+      Alert.alert('Erro', 'Não foi possível aumentar a quantidade do item.');
+    }
+  };
+
+  // (➖) Decrementa a quantidade atual (bloqueando para não ficar menor que 0)
+  const handleDecrementar = async (item) => {
+    const qtdAtual = Number(item.quantity ?? 1);
+    if (qtdAtual <= 0) return;
+
+    try {
+      await updateItemQuantity(item.id, Math.max(0, qtdAtual - 1));
+      await carregarItens(searchQuery);
+    } catch (error) {
+      console.error('Erro ao diminuir quantidade:', error);
+      Alert.alert('Erro', 'Não foi possível diminuir a quantidade do item.');
+    }
+  };
+
+  // (🗑️) Exibe confirmação nativa antes de excluir e recarregar a lista
+  const handleExcluir = (item) => {
+    Alert.alert('Confirmar exclusão', 'Tem certeza que deseja excluir?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Excluir',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteItem(item.id);
+            await carregarItens(searchQuery);
+          } catch (error) {
+            console.error('Erro ao excluir item:', error);
+            Alert.alert('Erro', 'Não foi possível excluir o item.');
+          }
+        },
+      },
+    ]);
+  };
+
   const formatarData = (iso) => {
     if (!iso) return '';
     return new Date(iso).toLocaleString('pt-BR', {
@@ -545,10 +593,10 @@ function InventarioScreen() {
     });
   };
 
-  const totalUnidades = itens.reduce(
-    (acc, item) => acc + (Number(item.quantity) || 1),
-    0
-  );
+  const totalUnidades = itens.reduce((acc, item) => {
+    const qtd = Number(item.quantity ?? 1);
+    return acc + (Number.isFinite(qtd) ? qtd : 1);
+  }, 0);
 
   return (
     <View style={styles.screen}>
@@ -605,35 +653,93 @@ function InventarioScreen() {
           itens.length === 0 ? styles.emptyContainer : styles.listContent
         }
         renderItem={({ item }) => {
-          const qtd = item.quantity ?? 1;
+          const qtd = Number(item.quantity ?? 1);
           const nomeLocal = item.space_name || 'Sem local definido';
 
           return (
-            <View style={styles.itemCard}>
-              <View style={styles.itemIconBox}>
-                <Text style={styles.itemIcon}>📦</Text>
-              </View>
+            <View style={styles.inventoryCard}>
+              {/* Linha principal: Ícone + Dados do Item + Badge de Quantidade */}
+              <View style={styles.inventoryCardTopRow}>
+                <View style={styles.itemIconBox}>
+                  <Text style={styles.itemIcon}>📦</Text>
+                </View>
 
-              <View style={styles.itemInfo}>
-                <Text style={styles.itemName} numberOfLines={1}>
-                  {item.name}
-                </Text>
+                <View style={styles.itemInfo}>
+                  <Text style={styles.itemName} numberOfLines={1}>
+                    {item.name}
+                  </Text>
 
-                <View style={styles.locationTag}>
-                  <Text style={styles.itemSpaceTag} numberOfLines={1}>
-                    📍 Local: {nomeLocal}
+                  <View style={styles.locationTag}>
+                    <Text style={styles.itemSpaceTag} numberOfLines={1}>
+                      📍 Local: {nomeLocal}
+                    </Text>
+                  </View>
+
+                  <Text style={styles.itemDate}>
+                    #{item.id} • {formatarData(item.created_at)}
                   </Text>
                 </View>
 
-                <Text style={styles.itemDate}>
-                  #{item.id} • {formatarData(item.created_at)}
-                </Text>
+                {/* Quantidade cadastrada destacada */}
+                <View
+                  style={[
+                    styles.quantityBadge,
+                    qtd === 0 && styles.quantityBadgeZero,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.quantityBadgeLabel,
+                      qtd === 0 && styles.quantityBadgeLabelZero,
+                    ]}
+                  >
+                    QTD
+                  </Text>
+                  <Text style={styles.quantityBadgeValue}>{qtd}</Text>
+                </View>
               </View>
 
-              {/* Quantidade cadastrada destacada */}
-              <View style={styles.quantityBadge}>
-                <Text style={styles.quantityBadgeLabel}>QTD</Text>
-                <Text style={styles.quantityBadgeValue}>{qtd}</Text>
+              {/* Painel de ações rápido (Giro de Estoque: ➖, ➕ e 🗑️) */}
+              <View style={styles.actionPanel}>
+                <View style={styles.qtyActionsGroup}>
+                  <TouchableOpacity
+                    style={[
+                      styles.actionButton,
+                      qtd <= 0 && styles.actionButtonDisabled,
+                    ]}
+                    activeOpacity={0.75}
+                    onPress={() => handleDecrementar(item)}
+                    disabled={qtd <= 0}
+                  >
+                    <Text style={styles.actionButtonIcon}>➖</Text>
+                    <Text style={styles.actionButtonLabel}>Diminuir</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.actionButton, styles.actionButtonIncrement]}
+                    activeOpacity={0.75}
+                    onPress={() => handleIncrementar(item)}
+                  >
+                    <Text style={styles.actionButtonIcon}>➕</Text>
+                    <Text
+                      style={[
+                        styles.actionButtonLabel,
+                        styles.actionButtonIncrementLabel,
+                      ]}
+                    >
+                      Aumentar
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.actionButtonDelete]}
+                  activeOpacity={0.75}
+                  onPress={() => handleExcluir(item)}
+                >
+                  <Text style={styles.actionButtonIcon}>🗑️</Text>
+                  <Text style={styles.actionButtonDeleteLabel}>Excluir</Text>
+                </TouchableOpacity>
               </View>
             </View>
           );
@@ -1046,9 +1152,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  // Card do Inventário e Painel de Ações Rápidas (Giro de Estoque)
+  inventoryCard: {
+    backgroundColor: CORES.superficie,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2e2e2e',
+    marginBottom: 12,
+  },
+  inventoryCardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
   // Badge de quantidade destacada no card do Inventário
   quantityBadge: {
-    minWidth: 54,
+    minWidth: 56,
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 10,
@@ -1058,16 +1178,78 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  quantityBadgeZero: {
+    backgroundColor: 'rgba(255, 152, 0, 0.14)',
+    borderColor: '#ff9800',
+  },
   quantityBadgeLabel: {
     color: CORES.primaria,
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
+  quantityBadgeLabelZero: {
+    color: '#ff9800',
+  },
   quantityBadgeValue: {
     color: CORES.texto,
     fontSize: 16,
     fontWeight: '800',
+  },
+  actionPanel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a2a',
+    gap: 8,
+  },
+  qtyActionsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: CORES.superficie2,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: CORES.borda,
+    gap: 6,
+  },
+  actionButtonDisabled: {
+    opacity: 0.35,
+  },
+  actionButtonIncrement: {
+    backgroundColor: 'rgba(0, 255, 204, 0.12)',
+    borderColor: CORES.primaria,
+  },
+  actionButtonDelete: {
+    backgroundColor: 'rgba(255, 82, 82, 0.12)',
+    borderColor: 'rgba(255, 82, 82, 0.45)',
+  },
+  actionButtonIcon: {
+    fontSize: 13,
+  },
+  actionButtonLabel: {
+    color: CORES.texto,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  actionButtonIncrementLabel: {
+    color: CORES.primaria,
+    fontWeight: '700',
+  },
+  actionButtonDeleteLabel: {
+    color: '#ff6b6b',
+    fontSize: 12,
+    fontWeight: '700',
   },
 
   emptyState: {

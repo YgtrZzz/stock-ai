@@ -215,6 +215,22 @@ export async function getItems(searchQuery = '') {
 }
 
 /**
+ * Atualiza a quantidade de um item específico pelo ID.
+ * @param {number} id ID do item a ser atualizado.
+ * @param {number} newQuantity Nova quantidade (bloqueada para não ficar menor que 0).
+ */
+export async function updateItemQuantity(id, newQuantity) {
+  const parsedQty = parseInt(newQuantity, 10);
+  const finalQuantity = Number.isFinite(parsedQty) ? Math.max(0, parsedQty) : 0;
+
+  const db = await initDatabase();
+  await db.runAsync('UPDATE items SET quantity = ? WHERE id = ?;', [
+    finalQuantity,
+    id,
+  ]);
+}
+
+/**
  * Remove um item específico pelo ID.
  * @param {number} id ID do item a ser removido.
  */
@@ -230,6 +246,7 @@ export const addItem = insertItem;
 export const inserirItem = insertItem;
 export const getAllItems = getItems;
 export const listarItens = getItems;
+export const atualizarQuantidadeItem = updateItemQuantity;
 export const removerItem = deleteItem;
 export const adicionarEspaco = addSpace;
 export const listarEspacos = getSpaces;
@@ -241,11 +258,13 @@ export default {
   getSpaces,
   insertItem,
   getItems,
+  updateItemQuantity,
   deleteItem,
   inicializarBanco,
   adicionarEspaco,
   listarEspacos,
   inserirItem,
   listarItens,
+  atualizarQuantidadeItem,
   removerItem,
 };
