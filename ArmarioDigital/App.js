@@ -510,10 +510,10 @@ function EspacosScreen() {
 }
 
 /* ==========================================================
-   ABA 3: INVENTÁRIO (Busca B2B + Giro de Estoque Update/Delete)
+   ABA 3: INVENTÁRIO (Busca B2B + Optimistic UI no Giro de Estoque)
    ========================================================== */
 function InventarioScreen() {
-  const [itens, setItens] = useState([]);
+  const [items, setItems] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [aCarregar, setACarregar] = useState(false);
 
@@ -521,7 +521,7 @@ function InventarioScreen() {
     setACarregar(true);
     try {
       const data = await getItems(termoBusca);
-      setItens(data);
+      setItems(data);
     } catch (error) {
       console.error('Erro ao listar inventário:', error);
     } finally {
@@ -536,46 +536,76 @@ function InventarioScreen() {
     }, [carregarItens, searchQuery])
   );
 
-  // (➕) Incrementa a quantidade atual e recarrega a lista imediatamente
+  // (➕) Optimistic UI Update: atualiza o estado local instantaneamente e persiste no SQLite em background
   const handleIncrementar = async (item) => {
     const qtdAtual = Number(item.quantity ?? 1);
+    const novaQtd = qtdAtual + 1;
+
+    setItems((prev) =>
+      prev.map((current) =>
+        current.id === item.id ? { ...current, quantity: novaQtd } : current
+      )
+    );
+
     try {
-      await updateItemQuantity(item.id, qtdAtual + 1);
-      await carregarItens(searchQuery);
+      await updateItemQuantity(item.id, novaQtd);
     } catch (error) {
       console.error('Erro ao aumentar quantidade:', error);
+      // Rollback em caso de erro no banco
+      setItems((prev) =>
+        prev.map((current) =>
+          current.id === item.id ? { ...current, quantity: qtdAtual } : current
+        )
+      );
       Alert.alert('Erro', 'Não foi possível aumentar a quantidade do item.');
     }
   };
 
-  // (➖) Decrementa a quantidade atual (bloqueando para não ficar menor que 0)
+  // (➖) Optimistic UI Update: decrementa no estado local (mínimo 0) e persiste no SQLite em background
   const handleDecrementar = async (item) => {
     const qtdAtual = Number(item.quantity ?? 1);
     if (qtdAtual <= 0) return;
 
+    const novaQtd = Math.max(0, qtdAtual - 1);
+
+    setItems((prev) =>
+      prev.map((current) =>
+        current.id === item.id ? { ...current, quantity: novaQtd } : current
+      )
+    );
+
     try {
-      await updateItemQuantity(item.id, Math.max(0, qtdAtual - 1));
-      await carregarItens(searchQuery);
+      await updateItemQuantity(item.id, novaQtd);
     } catch (error) {
       console.error('Erro ao diminuir quantidade:', error);
+      // Rollback em caso de erro no banco
+      setItems((prev) =>
+        prev.map((current) =>
+          current.id === item.id ? { ...current, quantity: qtdAtual } : current
+        )
+      );
       Alert.alert('Erro', 'Não foi possível diminuir a quantidade do item.');
     }
   };
 
-  // (🗑️) Exibe confirmação nativa antes de excluir e recarregar a lista
+  // (🗑️) Optimistic UI Update: remove do estado local após confirmação e executa deleteItem em background
   const handleExcluir = (item) => {
+    const { id } = item;
+
     Alert.alert('Confirmar exclusão', 'Tem certeza que deseja excluir?', [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
+          setItems((prev) => prev.filter((current) => current.id !== id));
+
           try {
-            await deleteItem(item.id);
-            await carregarItens(searchQuery);
+            await deleteItem(id);
           } catch (error) {
             console.error('Erro ao excluir item:', error);
             Alert.alert('Erro', 'Não foi possível excluir o item.');
+            carregarItens(searchQuery);
           }
         },
       },
@@ -593,7 +623,7 @@ function InventarioScreen() {
     });
   };
 
-  const totalUnidades = itens.reduce((acc, item) => {
+  const totalUnidades = items.reduce((acc, item) => {
     const qtd = Number(item.quantity ?? 1);
     return acc + (Number.isFinite(qtd) ? qtd : 1);
   }, 0);
@@ -606,7 +636,7 @@ function InventarioScreen() {
         <View style={styles.headerBadges}>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {itens.length} {itens.length === 1 ? 'item' : 'itens'}
+              {items.length} {items.length === 1 ? 'item' : 'itens'}
             </Text>
           </View>
           <View style={styles.qtyHeaderBadge}>
@@ -644,13 +674,13 @@ function InventarioScreen() {
       </View>
 
       <FlatList
-        data={itens}
+        data={items}
         keyExtractor={(item) => String(item.id)}
         refreshing={aCarregar}
         onRefresh={() => carregarItens(searchQuery)}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={
-          itens.length === 0 ? styles.emptyContainer : styles.listContent
+          items.length === 0 ? styles.emptyContainer : styles.listContent
         }
         renderItem={({ item }) => {
           const qtd = Number(item.quantity ?? 1);
