@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import {
@@ -20,6 +20,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Vibration,
   View,
 } from 'react-native';
 import {
@@ -64,12 +65,14 @@ function formatarNomeEspaco(espaco) {
 }
 
 /* ==========================================================
-   ABA 1: SCANNER (Câmera + Nome/Quantidade + Seletor de Espaço)
+   ABA 1: SCANNER (Câmera + Leitor de Código de Barras + Formulário)
    ========================================================== */
 function ScannerScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [nome, setNome] = useState('');
   const [quantidade, setQuantidade] = useState('1');
+  const [lastScannedData, setLastScannedData] = useState('');
+  const lastScannedRef = useRef('');
   const [espacos, setEspacos] = useState([]);
   const [espacoSelecionadoId, setEspacoSelecionadoId] = useState(null);
   const [aGuardar, setAGuardar] = useState(false);
@@ -100,6 +103,20 @@ function ScannerScreen() {
     }, [])
   );
 
+  // Evento disparado pela CameraView ao detectar código de barras/QR Code
+  const handleBarcodeScanned = ({ data }) => {
+    const valorLido = String(data ?? '').trim();
+    if (!valorLido) return;
+
+    // Controle de Spam: só preenche o input e vibra se o código for diferente do último lido
+    if (valorLido !== lastScannedData && valorLido !== lastScannedRef.current) {
+      lastScannedRef.current = valorLido;
+      setLastScannedData(valorLido);
+      setNome(valorLido);
+      Vibration.vibrate(100);
+    }
+  };
+
   const nomeValido = nome.trim().length > 0;
 
   const handleSalvar = async () => {
@@ -119,6 +136,8 @@ function ScannerScreen() {
 
       setNome('');
       setQuantidade('1');
+      lastScannedRef.current = '';
+      setLastScannedData('');
       Keyboard.dismiss();
       Alert.alert(
         'Item salvo',
@@ -161,7 +180,14 @@ function ScannerScreen() {
     }
 
     return isFocused ? (
-      <CameraView style={styles.camera} facing="back" />
+      <CameraView
+        style={styles.camera}
+        facing="back"
+        barcodeScannerSettings={{
+          barcodeTypes: ['qr', 'ean13', 'ean8', 'upc_a', 'upc_e', 'code128'],
+        }}
+        onBarcodeScanned={handleBarcodeScanned}
+      />
     ) : (
       <View style={styles.cameraPlaceholder} />
     );
