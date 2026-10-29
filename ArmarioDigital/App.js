@@ -62,11 +62,12 @@ function formatarNomeEspaco(espaco) {
 }
 
 /* ==========================================================
-   ABA 1: SCANNER (Câmera + Seletor de Espaço + Formulário)
+   ABA 1: SCANNER (Câmera + Nome/Quantidade + Seletor de Espaço)
    ========================================================== */
 function ScannerScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [nome, setNome] = useState('');
+  const [quantidade, setQuantidade] = useState('1');
   const [espacos, setEspacos] = useState([]);
   const [espacoSelecionadoId, setEspacoSelecionadoId] = useState(null);
   const [aGuardar, setAGuardar] = useState(false);
@@ -82,7 +83,6 @@ function ScannerScreen() {
           const lista = await getSpaces();
           if (!ativo) return;
           setEspacos(lista);
-          // Se ainda não houver espaço selecionado e existir pelo menos um, pré-seleciona o primeiro
           setEspacoSelecionadoId((atual) => {
             if (atual && lista.some((e) => e.id === atual)) return atual;
             return lista.length > 0 ? lista[0].id : null;
@@ -104,19 +104,23 @@ function ScannerScreen() {
     const nomeLimpo = nome.trim();
     if (!nomeLimpo || aGuardar) return;
 
+    const qtdParsed = parseInt(quantidade.replace(/[^0-9]/g, ''), 10);
+    const qtdFinal = Number.isFinite(qtdParsed) && qtdParsed > 0 ? qtdParsed : 1;
+
     setAGuardar(true);
     try {
-      await insertItem(nomeLimpo, espacoSelecionadoId);
+      await insertItem(nomeLimpo, espacoSelecionadoId, qtdFinal);
       const espacoEscolhido = espacos.find((e) => e.id === espacoSelecionadoId);
       const destinoTexto = espacoEscolhido
         ? ` em "${formatarNomeEspaco(espacoEscolhido)}"`
         : '';
 
       setNome('');
+      setQuantidade('1');
       Keyboard.dismiss();
       Alert.alert(
         'Item salvo',
-        `"${nomeLimpo}" foi guardado${destinoTexto} com sucesso.`
+        `${qtdFinal}x "${nomeLimpo}" guardado${destinoTexto} com sucesso.`
       );
     } catch (error) {
       console.error('Erro ao salvar item:', error);
@@ -169,27 +173,47 @@ function ScannerScreen() {
       {/* Câmera no topo */}
       <View style={styles.cameraContainer}>{renderCamera()}</View>
 
-      {/* Formulário manual e seletor de espaço abaixo da câmera */}
+      {/* Formulário manual: Nome + Quantidade lado a lado e Seletor de Espaço */}
       <View style={styles.form}>
-        <Text style={styles.label}>Nome do objeto</Text>
-        <TextInput
-          style={styles.input}
-          value={nome}
-          onChangeText={setNome}
-          placeholder="Ex: Furadeira, Caneca azul..."
-          placeholderTextColor={CORES.textoSuave}
-          maxLength={60}
-          returnKeyType="done"
-          onSubmitEditing={handleSalvar}
-          editable={!aGuardar}
-        />
+        <View style={styles.inputRow}>
+          <View style={styles.nameColumn}>
+            <Text style={styles.label}>Nome do objeto</Text>
+            <TextInput
+              style={styles.input}
+              value={nome}
+              onChangeText={setNome}
+              placeholder="Ex: Caixa de Parafusos"
+              placeholderTextColor={CORES.textoSuave}
+              maxLength={60}
+              returnKeyType="done"
+              onSubmitEditing={handleSalvar}
+              editable={!aGuardar}
+            />
+          </View>
+
+          <View style={styles.qtyColumn}>
+            <Text style={styles.label}>Quantidade</Text>
+            <TextInput
+              style={[styles.input, styles.qtyInput]}
+              value={quantidade}
+              onChangeText={(txt) => setQuantidade(txt.replace(/[^0-9]/g, ''))}
+              placeholder="1"
+              placeholderTextColor={CORES.textoSuave}
+              keyboardType="numeric"
+              maxLength={5}
+              returnKeyType="done"
+              onSubmitEditing={handleSalvar}
+              editable={!aGuardar}
+            />
+          </View>
+        </View>
 
         {/* Seletor visual de Espaço logo acima do botão Salvar Item */}
         <Text style={styles.label}>Guardar em qual Espaço?</Text>
         {espacos.length === 0 ? (
           <View style={styles.noSpacesBox}>
             <Text style={styles.noSpacesText}>
-              Nenhum espaço cadastrado. Crie cômodos na aba "Espaços" (ou salve
+              Nenhum espaço cadastrado. Crie locais na aba "Espaços" (ou salve
               sem espaço).
             </Text>
           </View>
@@ -263,12 +287,12 @@ function ScannerScreen() {
 }
 
 /* ==========================================================
-   ABA 2: ESPAÇOS (Cadastro e Listagem de Cômodos/Subcômodos)
+   ABA 2: ESPAÇOS (Drill-down Hierárquico com currentParentId)
    ========================================================== */
 function EspacosScreen() {
   const [espacos, setEspacos] = useState([]);
+  const [currentParentId, setCurrentParentId] = useState(null);
   const [nomeEspaco, setNomeEspaco] = useState('');
-  const [parentId, setParentId] = useState(null);
   const [aCarregar, setACarregar] = useState(false);
   const [aCriar, setACriar] = useState(false);
 
@@ -290,7 +314,24 @@ function EspacosScreen() {
     }, [carregarEspacos])
   );
 
+  // Espaço pai atualmente aberto (quando currentParentId !== null)
+  const espacoAtual = espacos.find((e) => e.id === currentParentId) || null;
+
+  // Filtra apenas os espaços cujo parent_id seja igual ao currentParentId
+  const espacosFiltrados = espacos.filter(
+    (e) => (e.parent_id ?? null) === currentParentId
+  );
+
   const nomeValido = nomeEspaco.trim().length > 0;
+
+  // Sobe um nível na árvore hierárquica (ou volta para null na raiz)
+  const handleVoltar = () => {
+    if (espacoAtual) {
+      setCurrentParentId(espacoAtual.parent_id ?? null);
+    } else {
+      setCurrentParentId(null);
+    }
+  };
 
   const handleAdicionarEspaco = async () => {
     const nomeLimpo = nomeEspaco.trim();
@@ -298,7 +339,7 @@ function EspacosScreen() {
 
     setACriar(true);
     try {
-      await addSpace(nomeLimpo, parentId);
+      await addSpace(nomeLimpo, currentParentId);
       setNomeEspaco('');
       Keyboard.dismiss();
       await carregarEspacos();
@@ -315,74 +356,47 @@ function EspacosScreen() {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Formulário de novo espaço */}
+      {/* Botão '⬅️ Voltar' no topo (renderizado apenas quando currentParentId !== null) */}
+      {currentParentId !== null && (
+        <View style={styles.drilldownBar}>
+          <TouchableOpacity
+            style={styles.backButton}
+            activeOpacity={0.8}
+            onPress={handleVoltar}
+          >
+            <Text style={styles.backButtonText}>⬅️ Voltar</Text>
+          </TouchableOpacity>
+          <View style={styles.breadcrumbBox}>
+            <Text style={styles.breadcrumbLabel}>Dentro de:</Text>
+            <Text style={styles.breadcrumbTitle} numberOfLines={1}>
+              {espacoAtual ? formatarNomeEspaco(espacoAtual) : 'Sub-espaço'}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* Formulário para cadastrar espaço no nível atual */}
       <View style={styles.spaceFormCard}>
-        <Text style={styles.label}>Novo Espaço (Cômodo ou Subcômodo)</Text>
+        <Text style={styles.label}>
+          {currentParentId === null
+            ? 'Novo Espaço Principal (ex: Estoque Central)'
+            : `Novo Sub-espaço dentro de "${espacoAtual?.name || ''}" (ex: Armário 1)`}
+        </Text>
         <TextInput
           style={styles.input}
           value={nomeEspaco}
           onChangeText={setNomeEspaco}
-          placeholder="Ex: Estoque Central, Armário 1..."
+          placeholder={
+            currentParentId === null
+              ? 'Ex: Estoque Central, Galpão A...'
+              : 'Ex: Armário 1, Prateleira B...'
+          }
           placeholderTextColor={CORES.textoSuave}
           maxLength={50}
           returnKeyType="done"
           onSubmitEditing={handleAdicionarEspaco}
           editable={!aCriar}
         />
-
-        {/* Seletor opcional de espaço pai para permitir hierarquia */}
-        {espacos.length > 0 && (
-          <>
-            <Text style={styles.label}>
-              Dentro de qual espaço? (opcional — hierarquia)
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.selectorRow}
-            >
-              <TouchableOpacity
-                style={[
-                  styles.spaceChip,
-                  parentId === null && styles.spaceChipActive,
-                ]}
-                onPress={() => setParentId(null)}
-              >
-                <Text
-                  style={[
-                    styles.spaceChipText,
-                    parentId === null && styles.spaceChipTextActive,
-                  ]}
-                >
-                  🏠 Espaço Principal (Raiz)
-                </Text>
-              </TouchableOpacity>
-
-              {espacos.map((esp) => {
-                const selecionado = parentId === esp.id;
-                return (
-                  <TouchableOpacity
-                    key={esp.id}
-                    style={[
-                      styles.spaceChip,
-                      selecionado && styles.spaceChipActive,
-                    ]}
-                    onPress={() => setParentId(esp.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.spaceChipText,
-                        selecionado && styles.spaceChipTextActive,
-                      ]}
-                    >
-                      ↳ {esp.name}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </>
-        )}
 
         <TouchableOpacity
           style={[
@@ -396,62 +410,94 @@ function EspacosScreen() {
           {aCriar ? (
             <ActivityIndicator color={CORES.fundo} />
           ) : (
-            <Text style={styles.saveButtonText}>+ Cadastrar Espaço</Text>
+            <Text style={styles.saveButtonText}>
+              {currentParentId === null
+                ? '+ Cadastrar Espaço'
+                : '+ Cadastrar Sub-espaço'}
+            </Text>
           )}
         </TouchableOpacity>
       </View>
 
-      {/* Cabeçalho da lista de espaços */}
+      {/* Cabeçalho da lista filtrada */}
       <View style={styles.listHeader}>
-        <Text style={styles.listTitle}>Espaços cadastrados</Text>
+        <Text style={styles.listTitle}>
+          {currentParentId === null
+            ? 'Espaços Principais (Raiz)'
+            : `Sub-espaços de ${espacoAtual?.name || ''}`}
+        </Text>
         <View style={styles.badge}>
           <Text style={styles.badgeText}>
-            {espacos.length} {espacos.length === 1 ? 'espaço' : 'espaços'}
+            {espacosFiltrados.length}{' '}
+            {espacosFiltrados.length === 1 ? 'local' : 'locais'}
           </Text>
         </View>
       </View>
 
-      {/* FlatList exibindo os espaços */}
+      {/* FlatList exibindo apenas os espaços com parent_id === currentParentId */}
       <FlatList
-        data={espacos}
+        data={espacosFiltrados}
         keyExtractor={(item) => String(item.id)}
         refreshing={aCarregar}
         onRefresh={carregarEspacos}
         contentContainerStyle={
-          espacos.length === 0 ? styles.emptyContainer : styles.listContent
+          espacosFiltrados.length === 0
+            ? styles.emptyContainer
+            : styles.listContent
         }
-        renderItem={({ item }) => (
-          <View style={styles.itemCard}>
-            <View style={styles.itemIconBox}>
-              <Text style={styles.itemIcon}>
-                {item.parent_id ? '📂' : '🏠'}
-              </Text>
-            </View>
-            <View style={styles.itemInfo}>
-              <Text style={styles.itemName} numberOfLines={1}>
-                {formatarNomeEspaco(item)}
-              </Text>
-              <Text style={styles.itemDate}>
-                {item.parent_name
-                  ? `Subcômodo de ${item.parent_name}`
-                  : 'Cômodo principal'}
-              </Text>
-            </View>
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>
-                {item.item_count ?? 0}{' '}
-                {(item.item_count ?? 0) === 1 ? 'item' : 'itens'}
-              </Text>
-            </View>
-          </View>
-        )}
+        renderItem={({ item }) => {
+          const qtdSubespacos = espacos.filter(
+            (sub) => sub.parent_id === item.id
+          ).length;
+
+          return (
+            <TouchableOpacity
+              style={styles.itemCard}
+              activeOpacity={0.75}
+              onPress={() => setCurrentParentId(item.id)}
+            >
+              <View style={styles.itemIconBox}>
+                <Text style={styles.itemIcon}>
+                  {item.parent_id ? '📂' : '🏠'}
+                </Text>
+              </View>
+              <View style={styles.itemInfo}>
+                <Text style={styles.itemName} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={styles.itemDate}>
+                  {qtdSubespacos > 0
+                    ? `${qtdSubespacos} ${qtdSubespacos === 1 ? 'sub-espaço' : 'sub-espaços'} • Toque para abrir`
+                    : 'Toque para entrar / adicionar sub-espaços'}
+                </Text>
+              </View>
+              <View style={styles.spaceRightBox}>
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {item.item_count ?? 0}{' '}
+                    {(item.item_count ?? 0) === 1 ? 'item' : 'itens'}
+                  </Text>
+                </View>
+                <Text style={styles.chevron}>›</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        }}
         ListEmptyComponent={
           !aCarregar && (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>🏠</Text>
-              <Text style={styles.emptyText}>Nenhum espaço cadastrado.</Text>
+              <Text style={styles.emptyIcon}>
+                {currentParentId === null ? '🏠' : '📂'}
+              </Text>
+              <Text style={styles.emptyText}>
+                {currentParentId === null
+                  ? 'Nenhum espaço principal cadastrado.'
+                  : 'Nenhum sub-espaço neste local.'}
+              </Text>
               <Text style={styles.emptySubtext}>
-                Cadastre ambientes como "Estoque Central" ou "Armário 1" acima.
+                {currentParentId === null
+                  ? 'Use o formulário acima para criar seu primeiro cômodo ou setor.'
+                  : 'Use o formulário acima para adicionar divisões (ex: Armário 1, Gaveta 2) ou toque em "⬅️ Voltar".'}
               </Text>
             </View>
           )
@@ -462,7 +508,7 @@ function EspacosScreen() {
 }
 
 /* ==========================================================
-   ABA 3: INVENTÁRIO (Listagem dedicada de itens)
+   ABA 3: INVENTÁRIO (Listagem com Badge de Quantidade B2B)
    ========================================================== */
 function InventarioScreen() {
   const [itens, setItens] = useState([]);
@@ -497,14 +543,26 @@ function InventarioScreen() {
     });
   };
 
+  const totalUnidades = itens.reduce(
+    (acc, item) => acc + (Number(item.quantity) || 1),
+    0
+  );
+
   return (
     <View style={styles.screen}>
       <View style={styles.listHeader}>
-        <Text style={styles.listTitle}>Total de itens</Text>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>
-            {itens.length} {itens.length === 1 ? 'item' : 'itens'}
-          </Text>
+        <Text style={styles.listTitle}>Total no inventário</Text>
+        <View style={styles.headerBadges}>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>
+              {itens.length} {itens.length === 1 ? 'registro' : 'registros'}
+            </Text>
+          </View>
+          <View style={styles.qtyHeaderBadge}>
+            <Text style={styles.qtyHeaderBadgeText}>
+              {totalUnidades} {totalUnidades === 1 ? 'un.' : 'uns.'}
+            </Text>
+          </View>
         </View>
       </View>
 
@@ -516,31 +574,40 @@ function InventarioScreen() {
         contentContainerStyle={
           itens.length === 0 ? styles.emptyContainer : styles.listContent
         }
-        renderItem={({ item }) => (
-          <View style={styles.itemCard}>
-            <View style={styles.itemIconBox}>
-              <Text style={styles.itemIcon}>📦</Text>
+        renderItem={({ item }) => {
+          const qtd = item.quantity ?? 1;
+          return (
+            <View style={styles.itemCard}>
+              <View style={styles.itemIconBox}>
+                <Text style={styles.itemIcon}>📦</Text>
+              </View>
+              <View style={styles.itemInfo}>
+                <Text style={styles.itemName} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={styles.itemSpaceTag}>
+                  📍 {item.space_name ? item.space_name : 'Sem espaço definido'}
+                </Text>
+                <Text style={styles.itemDate}>
+                  #{item.id} • {formatarData(item.created_at)}
+                </Text>
+              </View>
+
+              {/* Tag / Badge de Quantidade visualmente destacada */}
+              <View style={styles.quantityBadge}>
+                <Text style={styles.quantityBadgeLabel}>QTD</Text>
+                <Text style={styles.quantityBadgeValue}>{qtd}</Text>
+              </View>
             </View>
-            <View style={styles.itemInfo}>
-              <Text style={styles.itemName} numberOfLines={1}>
-                {item.name}
-              </Text>
-              <Text style={styles.itemSpaceTag}>
-                📍 {item.space_name ? item.space_name : 'Sem espaço definido'}
-              </Text>
-              <Text style={styles.itemDate}>
-                #{item.id} • {formatarData(item.created_at)}
-              </Text>
-            </View>
-          </View>
-        )}
+          );
+        }}
         ListEmptyComponent={
           !aCarregar && (
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>📭</Text>
               <Text style={styles.emptyText}>Nenhum item no inventário.</Text>
               <Text style={styles.emptySubtext}>
-                Vá à aba "Scanner" para guardar o primeiro objeto em um espaço.
+                Vá à aba "Scanner" para registrar objetos e suas quantidades.
               </Text>
             </View>
           )
@@ -654,6 +721,58 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: CORES.borda,
   },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  nameColumn: {
+    flex: 1,
+  },
+  qtyColumn: {
+    width: 105,
+  },
+  qtyInput: {
+    textAlign: 'center',
+    fontWeight: '700',
+  },
+
+  // Drill-down de Espaços
+  drilldownBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: CORES.superficie2,
+    borderBottomWidth: 1,
+    borderBottomColor: CORES.borda,
+    gap: 12,
+  },
+  backButton: {
+    backgroundColor: CORES.superficie,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: CORES.primaria,
+  },
+  backButtonText: {
+    color: CORES.primaria,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  breadcrumbBox: {
+    flex: 1,
+  },
+  breadcrumbLabel: {
+    color: CORES.textoSuave,
+    fontSize: 11,
+  },
+  breadcrumbTitle: {
+    color: CORES.texto,
+    fontSize: 15,
+    fontWeight: '700',
+  },
   spaceFormCard: {
     padding: 18,
     backgroundColor: CORES.superficie,
@@ -746,8 +865,15 @@ const styles = StyleSheet.create({
   },
   listTitle: {
     color: CORES.texto,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
+    flex: 1,
+    marginRight: 8,
+  },
+  headerBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   badge: {
     backgroundColor: 'rgba(0, 255, 204, 0.15)',
@@ -757,8 +883,19 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     color: CORES.primaria,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
+  },
+  qtyHeaderBadge: {
+    backgroundColor: CORES.primaria,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  qtyHeaderBadgeText: {
+    color: CORES.fundo,
+    fontSize: 12,
+    fontWeight: '800',
   },
   listContent: {
     padding: 16,
@@ -792,7 +929,7 @@ const styles = StyleSheet.create({
   },
   itemInfo: {
     flex: 1,
-    marginRight: 8,
+    marginRight: 10,
   },
   itemName: {
     color: CORES.texto,
@@ -810,6 +947,41 @@ const styles = StyleSheet.create({
     color: CORES.textoSuave,
     fontSize: 12,
   },
+  spaceRightBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chevron: {
+    color: CORES.textoSuave,
+    fontSize: 22,
+    fontWeight: '600',
+  },
+
+  // Badge de quantidade destacada no card do Inventário
+  quantityBadge: {
+    minWidth: 54,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0, 255, 204, 0.14)',
+    borderWidth: 1,
+    borderColor: CORES.primaria,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quantityBadgeLabel: {
+    color: CORES.primaria,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  quantityBadgeValue: {
+    color: CORES.texto,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+
   emptyState: {
     alignItems: 'center',
   },
@@ -822,6 +994,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginBottom: 4,
+    textAlign: 'center',
   },
   emptySubtext: {
     color: '#888888',

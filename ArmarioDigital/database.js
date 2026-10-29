@@ -3,11 +3,12 @@ import * as SQLite from 'expo-sqlite';
 const DATABASE_NAME = 'armario.db';
 
 /**
- * Versão do schema. Incrementar sempre que a estrutura das tabelas mudar.
- * v1: tabela 'inventory' (sem espaços)
- * v2: tabelas 'spaces' (hierárquica) e 'items' (com space_id)
+ * Versão do schema.
+ * v1: tabela 'inventory'
+ * v2: tabelas 'spaces' e 'items'
+ * v3: coluna 'quantity INTEGER DEFAULT 1' na tabela 'items' (padrão B2B)
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // Mantém uma única instância aberta do banco (padrão Singleton assíncrono)
 let dbPromise = null;
@@ -25,41 +26,9 @@ export async function getDatabase() {
 }
 
 /**
- * Recria todas as tabelas do zero (apenas desenvolvimento local).
- * Remove também a tabela antiga 'inventory' da v1.
- */
-async function recriarSchema(db) {
-  await db.execAsync(`
-    DROP TABLE IF EXISTS items;
-    DROP TABLE IF EXISTS spaces;
-    DROP TABLE IF EXISTS inventory;
-
-    CREATE TABLE spaces (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      parent_id INTEGER REFERENCES spaces(id) ON DELETE CASCADE,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE INDEX idx_spaces_parent ON spaces(parent_id);
-    CREATE INDEX idx_items_space ON items(space_id);
-
-    PRAGMA user_version = ${SCHEMA_VERSION};
-  `);
-}
-
-/**
  * Inicializa o banco 'armario.db'.
- * - Ativa as foreign keys (desligadas por padrão no SQLite, valem por conexão).
- * - Se o schema estiver desatualizado, dropa e recria as tabelas UMA única vez.
- *   Nas aberturas seguintes os dados são preservados.
+ * Inclui DROP TABLE IF EXISTS items para garantir a recriação limpa com a coluna quantity
+ * nesta rodada de evolução do schema.
  * @returns {Promise<SQLite.SQLiteDatabase>}
  */
 export async function initDatabase() {
@@ -72,12 +41,36 @@ export async function initDatabase() {
       const versaoAtual = row?.user_version ?? 0;
 
       if (versaoAtual < SCHEMA_VERSION) {
-        console.log(`[Database] Migrando schema v${versaoAtual} -> v${SCHEMA_VERSION} (recriando tabelas)`);
-        await recriarSchema(db);
+        await db.execAsync(`
+          DROP TABLE IF EXISTS items;
+          DROP TABLE IF EXISTS spaces;
+          DROP TABLE IF EXISTS inventory;
+
+          CREATE TABLE IF NOT EXISTS spaces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            parent_id INTEGER REFERENCES spaces(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
+            quantity INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_spaces_parent ON spaces(parent_id);
+          CREATE INDEX IF NOT EXISTS idx_items_space ON items(space_id);
+
+          PRAGMA user_version = ${SCHEMA_VERSION};
+        `);
       }
+
       return db;
     })().catch((error) => {
-      initPromise = null; // permite nova tentativa
+      initPromise = null;
       console.error('[Database] Erro ao inicializar o banco armario.db:', error);
       throw error;
     });
@@ -114,13 +107,17 @@ export async function addSpace(name, parent_id = null) {
     [nome, parentId, createdAt]
   );
 
-  return { id: result.lastInsertRowId, name: nome, parent_id: parentId, created_at: createdAt };
+  return {
+    id: result.lastInsertRowId,
+    name: nome,
+    parent_id: parentId,
+    created_at: createdAt,
+  };
 }
 
 /**
- * Lista todos os espaços (lista plana; a hierarquia é dada por parent_id).
- * Inclui a contagem de itens guardados diretamente em cada espaço.
- * @returns {Promise<Array<{ id: number, name: string, parent_id: number|null, created_at: string, item_count: number }>>}
+ * Lista todos os espaços com informações de hierarquia e contagem de itens.
+ * @returns {Promise<Array<{ id: number, name: string, parent_id: number|null, parent_name: string|null, created_at: string, item_count: number }>>}
  */
 export async function getSpaces() {
   const db = await initDatabase();
@@ -141,38 +138,54 @@ export async function getSpaces() {
 }
 
 /* ==========================================================
-   ITENS
+   ITENS (Com Controle de Quantidade B2B)
    ========================================================== */
 
 /**
- * Insere um novo item vinculado a um espaço.
+ * Insere um novo item vinculado a um espaço e com a respectiva quantidade.
  * @param {string} name Nome do item.
  * @param {number|null} space_id ID do espaço onde o item está guardado.
- * @returns {Promise<{ id: number, name: string, space_id: number|null, created_at: string }>}
+ * @param {number} quantity Quantidade do item (padrão: 1).
+ * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, created_at: string }>}
  */
-export async function insertItem(name, space_id = null) {
+export async function insertItem(name, space_id = null, quantity = 1) {
   const nome = limparNome(name);
   const spaceId = space_id ?? null;
+  const parsedQty = parseInt(quantity, 10);
+  const finalQuantity = Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
+
   const db = await initDatabase();
   const createdAt = new Date().toISOString();
 
   const result = await db.runAsync(
-    'INSERT INTO items (name, space_id, created_at) VALUES (?, ?, ?);',
-    [nome, spaceId, createdAt]
+    'INSERT INTO items (name, space_id, quantity, created_at) VALUES (?, ?, ?, ?);',
+    [nome, spaceId, finalQuantity, createdAt]
   );
 
-  return { id: result.lastInsertRowId, name: nome, space_id: spaceId, created_at: createdAt };
+  return {
+    id: result.lastInsertRowId,
+    name: nome,
+    space_id: spaceId,
+    quantity: finalQuantity,
+    created_at: createdAt,
+  };
 }
 
 /**
  * Lista todos os itens, do mais recente para o mais antigo,
- * incluindo o nome do espaço onde cada um está guardado.
- * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, space_name: string|null, created_at: string }>>}
+ * incluindo a quantidade e o nome do espaço onde cada um está guardado.
+ * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, space_name: string|null, created_at: string }>>}
  */
 export async function getItems() {
   const db = await initDatabase();
   return db.getAllAsync(`
-    SELECT i.id, i.name, i.space_id, s.name AS space_name, i.created_at
+    SELECT
+      i.id,
+      i.name,
+      i.space_id,
+      COALESCE(i.quantity, 1) AS quantity,
+      s.name AS space_name,
+      i.created_at
     FROM items i
     LEFT JOIN spaces s ON s.id = i.space_id
     ORDER BY i.id DESC;
