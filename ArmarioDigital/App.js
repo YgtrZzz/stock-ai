@@ -508,16 +508,17 @@ function EspacosScreen() {
 }
 
 /* ==========================================================
-   ABA 3: INVENTÁRIO (Listagem com Badge de Quantidade B2B)
+   ABA 3: INVENTÁRIO (Busca B2B em Tempo Real + Local e Quantidade)
    ========================================================== */
 function InventarioScreen() {
   const [itens, setItens] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [aCarregar, setACarregar] = useState(false);
 
-  const carregarItens = useCallback(async () => {
+  const carregarItens = useCallback(async (termoBusca = '') => {
     setACarregar(true);
     try {
-      const data = await getItems();
+      const data = await getItems(termoBusca);
       setItens(data);
     } catch (error) {
       console.error('Erro ao listar inventário:', error);
@@ -526,10 +527,11 @@ function InventarioScreen() {
     }
   }, []);
 
+  // Recarrega ao focar na aba e também em tempo real conforme searchQuery muda
   useFocusEffect(
     useCallback(() => {
-      carregarItens();
-    }, [carregarItens])
+      carregarItens(searchQuery);
+    }, [carregarItens, searchQuery])
   );
 
   const formatarData = (iso) => {
@@ -550,12 +552,13 @@ function InventarioScreen() {
 
   return (
     <View style={styles.screen}>
+      {/* Cabeçalho com contadores */}
       <View style={styles.listHeader}>
         <Text style={styles.listTitle}>Total no inventário</Text>
         <View style={styles.headerBadges}>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {itens.length} {itens.length === 1 ? 'registro' : 'registros'}
+              {itens.length} {itens.length === 1 ? 'item' : 'itens'}
             </Text>
           </View>
           <View style={styles.qtyHeaderBadge}>
@@ -566,34 +569,68 @@ function InventarioScreen() {
         </View>
       </View>
 
+      {/* Barra de Pesquisa fixada logo abaixo do cabeçalho */}
+      <View style={styles.searchBarContainer}>
+        <View style={styles.searchInputWrapper}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Pesquisar item pelo nome..."
+            placeholderTextColor={CORES.textoSuave}
+            returnKeyType="search"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity
+              style={styles.clearSearchButton}
+              onPress={() => setSearchQuery('')}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.clearSearchText}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
       <FlatList
         data={itens}
         keyExtractor={(item) => String(item.id)}
         refreshing={aCarregar}
-        onRefresh={carregarItens}
+        onRefresh={() => carregarItens(searchQuery)}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={
           itens.length === 0 ? styles.emptyContainer : styles.listContent
         }
         renderItem={({ item }) => {
           const qtd = item.quantity ?? 1;
+          const nomeLocal = item.space_name || 'Sem local definido';
+
           return (
             <View style={styles.itemCard}>
               <View style={styles.itemIconBox}>
                 <Text style={styles.itemIcon}>📦</Text>
               </View>
+
               <View style={styles.itemInfo}>
                 <Text style={styles.itemName} numberOfLines={1}>
                   {item.name}
                 </Text>
-                <Text style={styles.itemSpaceTag}>
-                  📍 {item.space_name ? item.space_name : 'Sem espaço definido'}
-                </Text>
+
+                <View style={styles.locationTag}>
+                  <Text style={styles.itemSpaceTag} numberOfLines={1}>
+                    📍 Local: {nomeLocal}
+                  </Text>
+                </View>
+
                 <Text style={styles.itemDate}>
                   #{item.id} • {formatarData(item.created_at)}
                 </Text>
               </View>
 
-              {/* Tag / Badge de Quantidade visualmente destacada */}
+              {/* Quantidade cadastrada destacada */}
               <View style={styles.quantityBadge}>
                 <Text style={styles.quantityBadgeLabel}>QTD</Text>
                 <Text style={styles.quantityBadgeValue}>{qtd}</Text>
@@ -604,10 +641,18 @@ function InventarioScreen() {
         ListEmptyComponent={
           !aCarregar && (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>📭</Text>
-              <Text style={styles.emptyText}>Nenhum item no inventário.</Text>
+              <Text style={styles.emptyIcon}>
+                {searchQuery.trim() ? '🔎' : '📭'}
+              </Text>
+              <Text style={styles.emptyText}>
+                {searchQuery.trim()
+                  ? `Nenhum item encontrado para "${searchQuery.trim()}".`
+                  : 'Nenhum item no inventário.'}
+              </Text>
               <Text style={styles.emptySubtext}>
-                Vá à aba "Scanner" para registrar objetos e suas quantidades.
+                {searchQuery.trim()
+                  ? 'Tente buscar por outro termo ou limpe o filtro.'
+                  : 'Vá à aba "Scanner" para registrar objetos e suas quantidades.'}
               </Text>
             </View>
           )
@@ -897,6 +942,42 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
+  // Barra de Pesquisa do Inventário
+  searchBarContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: CORES.superficie,
+    borderBottomWidth: 1,
+    borderBottomColor: CORES.borda,
+  },
+  searchInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: CORES.superficie2,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: CORES.borda,
+    paddingHorizontal: 12,
+  },
+  searchIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: CORES.texto,
+    fontSize: 15,
+    paddingVertical: 11,
+  },
+  clearSearchButton: {
+    padding: 4,
+    marginLeft: 6,
+  },
+  clearSearchText: {
+    color: CORES.textoSuave,
+    fontSize: 15,
+    fontWeight: '700',
+  },
   listContent: {
     padding: 16,
   },
@@ -934,14 +1015,21 @@ const styles = StyleSheet.create({
   itemName: {
     color: CORES.texto,
     fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 2,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  locationTag: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(0, 255, 204, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginBottom: 4,
   },
   itemSpaceTag: {
     color: CORES.primaria,
     fontSize: 12,
     fontWeight: '600',
-    marginBottom: 2,
   },
   itemDate: {
     color: CORES.textoSuave,

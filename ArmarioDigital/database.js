@@ -172,23 +172,45 @@ export async function insertItem(name, space_id = null, quantity = 1) {
 }
 
 /**
- * Lista todos os itens, do mais recente para o mais antigo,
- * incluindo a quantidade e o nome do espaço onde cada um está guardado.
+ * Lista os itens do inventário com LEFT JOIN na tabela spaces,
+ * filtrando opcionalmente pelo termo de busca (searchQuery).
+ * @param {string} searchQuery Termo de busca opcional para filtrar por nome.
  * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, space_name: string|null, created_at: string }>>}
  */
-export async function getItems() {
+export async function getItems(searchQuery = '') {
   const db = await initDatabase();
+  const termo = String(searchQuery ?? '').trim();
+
+  if (termo) {
+    return db.getAllAsync(
+      `
+      SELECT
+        items.id,
+        items.name,
+        items.space_id,
+        COALESCE(items.quantity, 1) AS quantity,
+        spaces.name AS space_name,
+        items.created_at
+      FROM items
+      LEFT JOIN spaces ON items.space_id = spaces.id
+      WHERE items.name LIKE ?
+      ORDER BY items.id DESC;
+      `,
+      [`%${termo}%`]
+    );
+  }
+
   return db.getAllAsync(`
     SELECT
-      i.id,
-      i.name,
-      i.space_id,
-      COALESCE(i.quantity, 1) AS quantity,
-      s.name AS space_name,
-      i.created_at
-    FROM items i
-    LEFT JOIN spaces s ON s.id = i.space_id
-    ORDER BY i.id DESC;
+      items.id,
+      items.name,
+      items.space_id,
+      COALESCE(items.quantity, 1) AS quantity,
+      spaces.name AS space_name,
+      items.created_at
+    FROM items
+    LEFT JOIN spaces ON items.space_id = spaces.id
+    ORDER BY items.id DESC;
   `);
 }
 
