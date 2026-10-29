@@ -3,18 +3,16 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^3.1.1",
-    "@tensorflow-models/mobilenet": "^2.1.1",
-    "@tensorflow/tfjs": "^4.22.0",
-    "@tensorflow/tfjs-react-native": "^1.0.0",
+    "@react-navigation/bottom-tabs": "^7.21.0",
+    "@react-navigation/native": "^7.5.1",
     "expo": "~57.0.28",
     "expo-camera": "~57.0.6",
-    "expo-gl": "^57.0.2",
     "expo-sqlite": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
-    "react-native-fs": "^2.20.0"
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0"
   },
   "scripts": {
     "start": "expo start",

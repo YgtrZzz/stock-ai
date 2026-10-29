@@ -1,7 +1,3 @@
-if (typeof navigator !== 'undefined' && !navigator.product) {
-  navigator.product = 'ReactNative';
-}
-
 import { registerRootComponent } from 'expo';
 
 import App from './App';
