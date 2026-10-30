@@ -67,6 +67,8 @@ import {
   updateItemQuantity,
   deleteItem,
 } from './database';
+import YoloCameraOverlay from './components/YoloCameraOverlay';
+import { runYoloInference } from './vision/yoloAdapter';
 
 const Tab = createBottomTabNavigator();
 
@@ -257,6 +259,7 @@ function ScannerScreen({ onInventoryUpdated }) {
   const [quantidade, setQuantidade] = useState('1');
   const [currentBarcode, setCurrentBarcode] = useState(null);
   const [capturedImage, setCapturedImage] = useState(null);
+  const [yoloDetections, setYoloDetections] = useState([]);
   const [aCapturarFoto, setACapturarFoto] = useState(false);
   const [lastScannedData, setLastScannedData] = useState('');
   const lastScannedRef = useRef('');
@@ -288,6 +291,7 @@ function ScannerScreen({ onInventoryUpdated }) {
       carregarEspacos();
       return () => {
         ativo = false;
+        processandoScanRef.current = false;
       };
     }, [])
   );
@@ -351,7 +355,7 @@ function ScannerScreen({ onInventoryUpdated }) {
     }
   };
 
-  // Captura de fotografia nativa na CameraView via takePictureAsync()
+  // Captura de fotografia nativa na CameraView via takePictureAsync() + Inferência YOLO
   const handleTirarFotoItem = async () => {
     if (aCapturarFoto || !cameraRef.current?.takePictureAsync) return;
 
@@ -362,6 +366,13 @@ function ScannerScreen({ onInventoryUpdated }) {
       });
       if (foto?.uri) {
         setCapturedImage(foto.uri);
+        const resultadoYolo = await runYoloInference({
+          uri: foto.uri,
+          width: foto.width,
+          height: foto.height,
+          userProfile,
+        });
+        setYoloDetections(resultadoYolo.detections);
         Vibration.vibrate(80);
         inputNomeRef.current?.focus();
       }
@@ -375,6 +386,23 @@ function ScannerScreen({ onInventoryUpdated }) {
       setACapturarFoto(false);
     }
   };
+
+  // Aplica a sugestão do modelo YOLO conforme o perfil ('home' -> Nome | 'business' -> Lote)
+  const handleAplicarSugestaoYolo = useCallback(
+    (summary) => {
+      if (!summary?.hasDetections) return;
+      if (summary.profile === 'business') {
+        setQuantidade(String(summary.suggestedQuantity));
+        if (!nome.trim() && summary.suggestedItemName) {
+          setNome(summary.suggestedItemName);
+        }
+      } else if (summary.suggestedItemName) {
+        setNome(summary.suggestedItemName);
+      }
+      Vibration.vibrate(60);
+    },
+    [nome]
+  );
 
   // Atalho de controle rápido de lote (Perfil 'business')
   const handleSomarLote = (incremento) => {
@@ -410,6 +438,7 @@ function ScannerScreen({ onInventoryUpdated }) {
       setQuantidade('1');
       setCurrentBarcode(null);
       setCapturedImage(null);
+      setYoloDetections([]);
       lastScannedRef.current = '';
       setLastScannedData('');
       processandoScanRef.current = false;
@@ -458,27 +487,35 @@ function ScannerScreen({ onInventoryUpdated }) {
       );
     }
 
+    // Ciclo de vida estrito: desmonta CameraView e YoloCameraOverlay quando a aba está inativa
     return isFocused ? (
-      <CameraView
-        ref={cameraRef}
-        style={styles.camera}
-        facing="back"
-        barcodeScannerSettings={
-          isBusiness
-            ? {
-                barcodeTypes: [
-                  'qr',
-                  'ean13',
-                  'ean8',
-                  'upc_a',
-                  'upc_e',
-                  'code128',
-                ],
-              }
-            : undefined
-        }
-        onBarcodeScanned={isBusiness ? handleBarcodeScanned : undefined}
-      />
+      <View style={styles.activeCameraWrapper}>
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing="back"
+          barcodeScannerSettings={
+            isBusiness
+              ? {
+                  barcodeTypes: [
+                    'qr',
+                    'ean13',
+                    'ean8',
+                    'upc_a',
+                    'upc_e',
+                    'code128',
+                  ],
+                }
+              : undefined
+          }
+          onBarcodeScanned={isBusiness ? handleBarcodeScanned : undefined}
+        />
+        <YoloCameraOverlay
+          detections={yoloDetections}
+          userProfile={userProfile}
+          onApplySuggestion={handleAplicarSugestaoYolo}
+        />
+      </View>
     ) : (
       <View style={styles.cameraPlaceholder} />
     );
@@ -585,6 +622,10 @@ function ScannerScreen({ onInventoryUpdated }) {
               source={{ uri: capturedImage }}
               style={styles.capturedPreviewThumb}
               resizeMode="cover"
+              onError={() => {
+                setCapturedImage(null);
+                setYoloDetections([]);
+              }}
             />
             <View style={styles.capturedPreviewTextCol}>
               <View style={styles.capturedPreviewStatusRow}>
@@ -598,12 +639,15 @@ function ScannerScreen({ onInventoryUpdated }) {
                 </Text>
               </View>
               <Text style={styles.capturedPreviewSubtitle} numberOfLines={1}>
-                Miniatura pronta para ser guardada com o item
+                Miniatura pronta para ser guardada em armazenamento permanente
               </Text>
             </View>
             <TouchableOpacity
               style={styles.capturedPreviewRemoveBtn}
-              onPress={() => setCapturedImage(null)}
+              onPress={() => {
+                setCapturedImage(null);
+                setYoloDetections([]);
+              }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
@@ -1021,6 +1065,13 @@ function InventarioScreen({ refreshKey }) {
   const [items, setItems] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [aCarregar, setACarregar] = useState(false);
+  const [failedImageIds, setFailedImageIds] = useState({});
+
+  const handleImageError = useCallback((itemId) => {
+    setFailedImageIds((prev) =>
+      prev[itemId] ? prev : { ...prev, [itemId]: true }
+    );
+  }, []);
 
   const carregarItens = useCallback(async (termoBusca = '') => {
     setACarregar(true);
@@ -1210,28 +1261,54 @@ function InventarioScreen({ refreshKey }) {
           const qtd = Number(item.quantity ?? 1);
           const nomeLocal = item.space_name || 'Sem local definido';
           const semEstoque = qtd === 0;
+          const imagemFalhou = Boolean(failedImageIds[item.id]);
 
           return (
             <View style={styles.inventoryCard}>
-              {/* PERFIL HOME: Imagem de destaque de ponta a ponta no topo do card */}
+              {/* PERFIL HOME: Imagem de destaque de ponta a ponta no topo do card com fallback resiliente onError */}
               {isHome && item.image_uri ? (
-                <Image
-                  source={{ uri: item.image_uri }}
-                  style={styles.homeCardCoverImage}
-                  resizeMode="cover"
-                />
+                imagemFalhou ? (
+                  <View style={styles.homeCardCoverFallback}>
+                    <CameraOff
+                      size={22}
+                      color={TOKENS.faint}
+                      strokeWidth={1.5}
+                    />
+                    <Text style={styles.homeCardFallbackText}>
+                      Imagem local indisponível
+                    </Text>
+                  </View>
+                ) : (
+                  <Image
+                    source={{ uri: item.image_uri }}
+                    style={styles.homeCardCoverImage}
+                    resizeMode="cover"
+                    onError={() => handleImageError(item.id)}
+                  />
+                )
               ) : null}
 
               <View style={styles.inventoryCardBody}>
                 {/* Linha Superior: Avatar B2B (quando aplicável) + Identificação + Metadados + Pílula de Quantidade */}
                 <View style={styles.inventoryCardTopRow}>
-                  {/* PERFIL BUSINESS: Miniatura circular (avatar) à esquerda do título */}
+                  {/* PERFIL BUSINESS: Miniatura circular (avatar 44x44) à esquerda do título com fallback onError */}
                   {!isHome && item.image_uri ? (
-                    <Image
-                      source={{ uri: item.image_uri }}
-                      style={styles.businessAvatarImage}
-                      resizeMode="cover"
-                    />
+                    imagemFalhou ? (
+                      <View style={styles.businessAvatarFallback}>
+                        <Package
+                          size={18}
+                          color={TOKENS.faint}
+                          strokeWidth={1.5}
+                        />
+                      </View>
+                    ) : (
+                      <Image
+                        source={{ uri: item.image_uri }}
+                        style={styles.businessAvatarImage}
+                        resizeMode="cover"
+                        onError={() => handleImageError(item.id)}
+                      />
+                    )
                   ) : null}
 
                   <View style={styles.itemInfo}>
@@ -1655,6 +1732,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: TOKENS.ground,
   },
+  activeCameraWrapper: {
+    flex: 1,
+    position: 'relative',
+  },
   camera: {
     flex: 1,
   },
@@ -1767,16 +1848,6 @@ const styles = StyleSheet.create({
   },
   capturedPreviewRemoveBtn: {
     padding: 4,
-  },
-  scannedBarcodePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: TOKENS.pillPositiveBg,
-    borderRadius: TOKENS.radiusControl,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    marginBottom: TOKENS.gap,
   },
   scannedBarcodeLeft: {
     flexDirection: 'row',
@@ -2151,11 +2222,32 @@ const styles = StyleSheet.create({
     height: 176,
     backgroundColor: TOKENS.raised,
   },
+  homeCardCoverFallback: {
+    width: '100%',
+    height: 132,
+    backgroundColor: TOKENS.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  homeCardFallbackText: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+  },
   businessAvatarImage: {
     width: 44,
     height: 44,
     borderRadius: TOKENS.radiusControl,
     backgroundColor: TOKENS.raised,
+  },
+  businessAvatarFallback: {
+    width: 44,
+    height: 44,
+    borderRadius: TOKENS.radiusControl,
+    backgroundColor: TOKENS.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   inventoryCardTopRow: {
     flexDirection: 'row',

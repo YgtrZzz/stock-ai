@@ -1,6 +1,8 @@
 import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system/legacy';
 
 const DATABASE_NAME = 'armario.db';
+const IMAGES_SUBDIR = 'armario_images/';
 
 /**
  * Versão do schema.
@@ -8,13 +10,21 @@ const DATABASE_NAME = 'armario.db';
  * v2: tabelas 'spaces' e 'items'
  * v3: coluna 'quantity INTEGER DEFAULT 1' na tabela 'items' (padrão B2B)
  * v4: coluna 'barcode TEXT' na tabela 'items' (separação Código de Barras vs Nome + Soma Automática)
- * v5: coluna 'image_uri TEXT' na tabela 'items' (captura fotográfica nativa Multi-Perfil)
+ * v5: coluna 'image_uri TEXT' na tabela 'items' com migração não-destrutiva e persistência em FileSystem.documentDirectory
  */
 const SCHEMA_VERSION = 5;
 
 // Mantém uma única instância aberta do banco (padrão Singleton assíncrono)
 let dbPromise = null;
 let initPromise = null;
+
+/**
+ * Reinicia as referências de conexão em memória (exclusivo para isolamento de testes automatizados).
+ */
+export function resetDatabaseConnectionForTests() {
+  dbPromise = null;
+  initPromise = null;
+}
 
 /**
  * Abre (ou reutiliza) a conexão com o banco de dados 'armario.db'.
@@ -28,9 +38,62 @@ export async function getDatabase() {
 }
 
 /**
- * Inicializa o banco 'armario.db'.
- * Inclui DROP TABLE IF EXISTS items para garantir a recriação limpa com a coluna image_uri
- * nesta rodada de evolução do schema.
+ * Move uma foto capturada do cache temporário da câmera para o diretório permanente
+ * FileSystem.documentDirectory antes de persistir o novo URI no SQLite.
+ * Operação idempotente: se o URI já estiver dentro de documentDirectory, retorna-o diretamente.
+ *
+ * @param {string|null|undefined} sourceUri URI de origem da imagem.
+ * @returns {Promise<string|null>} Novo URI permanente em FileSystem.documentDirectory ou null.
+ */
+export async function persistCapturedImage(sourceUri) {
+  const limpo = sourceUri ? String(sourceUri).trim() : '';
+  if (!limpo) return null;
+
+  const docDir = FileSystem?.documentDirectory;
+  if (!docDir) {
+    return limpo;
+  }
+
+  // Se já está salvo no documentDirectory, não precisa mover novamente
+  if (limpo.startsWith(docDir)) {
+    return limpo;
+  }
+
+  const baseDir = docDir.endsWith('/')
+    ? `${docDir}${IMAGES_SUBDIR}`
+    : `${docDir}/${IMAGES_SUBDIR}`;
+
+  // Extrai extensão segura do arquivo original (padrão .jpg)
+  const matchExt = limpo.match(/\.(jpg|jpeg|png|webp)$/i);
+  const ext = matchExt ? matchExt[0].toLowerCase() : '.jpg';
+  const uniqueName = `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const destinationUri = `${baseDir}${uniqueName}`;
+
+  try {
+    if (typeof FileSystem.makeDirectoryAsync === 'function') {
+      await FileSystem.makeDirectoryAsync(baseDir, { intermediates: true });
+    }
+    if (typeof FileSystem.moveAsync === 'function') {
+      await FileSystem.moveAsync({
+        from: limpo,
+        to: destinationUri,
+      });
+      return destinationUri;
+    }
+    return limpo;
+  } catch (error) {
+    console.warn(
+      '[Database] Falha ao mover imagem para documentDirectory, mantendo URI original:',
+      error
+    );
+    return limpo;
+  }
+}
+
+/**
+ * Inicializa o banco 'armario.db' de forma não-destrutiva.
+ * Garante a criação das tabelas 'spaces' e 'items' e aplica migrações incrementais
+ * via PRAGMA table_info(items) sem apagar registros existentes.
  * @returns {Promise<SQLite.SQLiteDatabase>}
  */
 export async function initDatabase() {
@@ -39,38 +102,47 @@ export async function initDatabase() {
       const db = await getDatabase();
       await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
-      const row = await db.getFirstAsync('PRAGMA user_version;');
-      const versaoAtual = row?.user_version ?? 0;
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS spaces (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          parent_id INTEGER REFERENCES spaces(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL
+        );
 
-      if (versaoAtual < SCHEMA_VERSION) {
-        await db.execAsync(`
-          DROP TABLE IF EXISTS items;
-          DROP TABLE IF EXISTS inventory;
+        CREATE TABLE IF NOT EXISTS items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
+          quantity INTEGER DEFAULT 1,
+          barcode TEXT,
+          image_uri TEXT,
+          created_at TEXT NOT NULL
+        );
+      `);
 
-          CREATE TABLE IF NOT EXISTS spaces (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            parent_id INTEGER REFERENCES spaces(id) ON DELETE CASCADE,
-            created_at TEXT NOT NULL
-          );
+      // Inspeção não-destrutiva de colunas para bancos criados em versões anteriores
+      const colunasItems = await db.getAllAsync('PRAGMA table_info(items);');
+      const nomesColunas = new Set(colunasItems.map((col) => col.name));
 
-          CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
-            quantity INTEGER DEFAULT 1,
-            barcode TEXT,
-            image_uri TEXT,
-            created_at TEXT NOT NULL
-          );
-
-          CREATE INDEX IF NOT EXISTS idx_spaces_parent ON spaces(parent_id);
-          CREATE INDEX IF NOT EXISTS idx_items_space ON items(space_id);
-          CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
-
-          PRAGMA user_version = ${SCHEMA_VERSION};
-        `);
+      if (!nomesColunas.has('quantity')) {
+        await db.execAsync(
+          'ALTER TABLE items ADD COLUMN quantity INTEGER DEFAULT 1;'
+        );
       }
+      if (!nomesColunas.has('barcode')) {
+        await db.execAsync('ALTER TABLE items ADD COLUMN barcode TEXT;');
+      }
+      if (!nomesColunas.has('image_uri')) {
+        await db.execAsync('ALTER TABLE items ADD COLUMN image_uri TEXT;');
+      }
+
+      await db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_spaces_parent ON spaces(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_items_space ON items(space_id);
+        CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
+        PRAGMA user_version = ${SCHEMA_VERSION};
+      `);
 
       return db;
     })().catch((error) => {
@@ -142,11 +214,12 @@ export async function getSpaces() {
 }
 
 /* ==========================================================
-   ITENS (Com Quantidade B2B, Código de Barras e Foto Nativa)
+   ITENS (Com Quantidade B2B, Código de Barras e Foto Permanente)
    ========================================================== */
 
 /**
- * Insere um novo item vinculado a um espaço, com quantidade, código de barras e URI da foto.
+ * Insere um novo item vinculado a um espaço, movendo a foto capturada para
+ * FileSystem.documentDirectory antes de persistir no SQLite.
  * @param {string} name Nome do item.
  * @param {number|null} space_id ID do espaço onde o item está guardado.
  * @param {number} quantity Quantidade do item (padrão: 1).
@@ -164,9 +237,10 @@ export async function insertItem(
   const nome = limparNome(name);
   const spaceId = space_id ?? null;
   const parsedQty = parseInt(quantity, 10);
-  const finalQuantity = Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
+  const finalQuantity =
+    Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
   const finalBarcode = barcode ? String(barcode).trim() || null : null;
-  const finalImageUri = image_uri ? String(image_uri).trim() || null : null;
+  const finalImageUri = await persistCapturedImage(image_uri);
 
   const db = await initDatabase();
   const createdAt = new Date().toISOString();
@@ -185,6 +259,23 @@ export async function insertItem(
     image_uri: finalImageUri,
     created_at: createdAt,
   };
+}
+
+/**
+ * Atualiza (ou anexa) a fotografia de um item existente, movendo o arquivo do cache
+ * para FileSystem.documentDirectory antes de gravar no banco.
+ * @param {number} id ID do item a ser atualizado.
+ * @param {string|null} image_uri URI da nova fotografia (ou null para limpar).
+ * @returns {Promise<string|null>} Novo URI permanente persistido.
+ */
+export async function updateItemImage(id, image_uri = null) {
+  const finalImageUri = await persistCapturedImage(image_uri);
+  const db = await initDatabase();
+  await db.runAsync('UPDATE items SET image_uri = ? WHERE id = ?;', [
+    finalImageUri,
+    id,
+  ]);
+  return finalImageUri;
 }
 
 /**
@@ -297,6 +388,7 @@ export const initDB = initDatabase;
 export const inicializarBanco = initDatabase;
 export const addItem = insertItem;
 export const inserirItem = insertItem;
+export const atualizarImagemItem = updateItemImage;
 export const buscarItemPorCodigo = getItemByBarcode;
 export const getAllItems = getItems;
 export const listarItens = getItems;
@@ -308,17 +400,21 @@ export const listarEspacos = getSpaces;
 export default {
   getDatabase,
   initDatabase,
+  persistCapturedImage,
   addSpace,
   getSpaces,
   insertItem,
+  updateItemImage,
   getItemByBarcode,
   getItems,
   updateItemQuantity,
   deleteItem,
+  resetDatabaseConnectionForTests,
   inicializarBanco,
   adicionarEspaco,
   listarEspacos,
   inserirItem,
+  atualizarImagemItem,
   buscarItemPorCodigo,
   listarItens,
   atualizarQuantidadeItem,

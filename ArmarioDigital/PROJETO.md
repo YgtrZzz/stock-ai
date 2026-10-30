@@ -21,11 +21,14 @@ Na primeira abertura do aplicativo, um **Onboarding Inicial** pergunta ao usuár
 | :--- | :--- | :--- |
 | **Core Mobile** | **React Native (`0.88`)** | Renderização nativa multiplataforma (Android / iOS) com alto desempenho |
 | **Ecossistema & Build** | **Expo (`SDK 58`)** | Runtime moderno, gerenciamento de módulos nativos e *Developer Experience* |
-| **Persistência Relacional** | **SQLite (`expo-sqlite`)** | Banco de dados relacional embarcado com suporte a `WAL` e *Foreign Keys* |
+| **Persistência Relacional** | **SQLite (`expo-sqlite`)** | Banco de dados relacional embarcado com suporte a `WAL`, *Foreign Keys* e migração não-destrutiva |
+| **Armazenamento de Mídia** | **Expo FileSystem (`expo-file-system/legacy`)** | Realocação permanente de fotos do cache da câmera para `FileSystem.documentDirectory` |
 | **Estado de Perfil & Onboarding** | **AsyncStorage (`@react-native-async-storage/async-storage`)** | Persistência local da preferência de perfil (`'home'` ou `'business'`) |
-| **Navegação** | **React Navigation (`@react-navigation/bottom-tabs`)** | Arquitetura em Bottom Tabs com controle de ciclo de vida por foco (`useFocusEffect`) |
+| **Navegação** | **React Navigation (`@react-navigation/bottom-tabs`)** | Arquitetura em Bottom Tabs com controle estrito de ciclo de vida por foco (`useFocusEffect` / `useIsFocused`) |
 | **Captura & Sensores** | **Expo Camera (`expo-camera`)** | Captura fotográfica de itens (`'home'`) e leitor de códigos de barras/QR Code (`'business'`) |
+| **Visão Computacional (Edge AI)** | **`vision/yoloAdapter.js` + `react-native-svg`** | Contrato de inferência YOLO (`.tflite`) e overlay vetorial de *Bounding Boxes* em tempo real |
 | **Design System & Ícones** | **`true-black-flat` + `lucide-react-native`** | Tokens semânticos em preto absoluto (`#000000` / `#111111`) e ícones vetoriais SVG |
+| **Qualidade & TDD** | **Node Test Runner (`node:test` + `node:sqlite`)** | Suíte automatizada de testes de contrato SQLite e visão computacional |
 
 ---
 
@@ -50,15 +53,26 @@ Na primeira abertura do aplicativo, um **Onboarding Inicial** pergunta ao usuár
   * **Soma Automática de SKUs Conhecidos:** Ao bipar um código já existente no banco (`getItemByBarcode`), dispensa o formulário manual, incrementa `+1` no estoque (`updateItemQuantity`), emite vibração dupla (`[0, 200, 200, 200]`) e atualiza o inventário imediatamente.
   * **Controle Rápido de Lote:** Exibe pílulas de incremento rápido (`+1`, `+5`, `+10`, `+25`, `1 un.`) para entrada ágil de caixas fechadas.
 
-### 🖼️ Motor de Renderização Dinâmica e Adaptativa no Inventário (`<Image>`)
-* O motor de renderização dos cards na `FlatList` adapta automaticamente a hierarquia visual da fotografia (`item.image_uri`) conforme o perfil ativo no `ProfileContext`:
-  * **Modo Residencial (`userProfile === 'home'`):** Dá grande destaque visual à fotografia do objeto, renderizando um banner superior de ponta a ponta (*full-bleed cover*) no topo do card.
-  * **Modo Comercial (`userProfile === 'business'`):** Renderiza a imagem apenas como uma pequena miniatura circular (*avatar* `44x44`) à esquerda do título do produto, preservando o foco operacional nos botões de giro de estoque e no código de barras.
+### 🖼️ Motor de Renderização Dinâmica e Resiliente no Inventário (`<Image>` + `onError`)
+* **Armazenamento Permanente (`persistCapturedImage`):** Antes de gravar qualquer fotografia no SQLite, o arquivo temporário gerado pela câmera é movido automaticamente do cache volátil para `${FileSystem.documentDirectory}armario_images/` via `expo-file-system/legacy`.
+* **Renderização Adaptativa por Perfil com Fallback `onError`:**
+  * **Modo Residencial (`userProfile === 'home'`):** Renderiza um banner superior de ponta a ponta (*full-bleed cover*) no topo do card. Caso o arquivo local seja inacessível (`onError`), degrada graciosamente para o placeholder `true-black-flat` (`homeCardCoverFallback` com ícone vetorial `CameraOff`).
+  * **Modo Comercial (`userProfile === 'business'`):** Renderiza a imagem como uma miniatura circular (*avatar* `44x44`) à esquerda do título do SKU, com fallback vetorial circular (`businessAvatarFallback` com ícone `Package`) em caso de erro de leitura.
 
-### 🗃️ Banco de Dados Relacional (`armario.db` — Schema v5)
-Modelagem SQLite estruturada com integridade referencial ativa (`PRAGMA foreign_keys = ON`) e versionamento via `PRAGMA user_version`:
+### 🤖 Infraestrutura Nativa para Modelo YOLO / Edge AI (`.tflite`)
+* **Camada de Domínio (`vision/yoloAdapter.js`):**
+  * Normalização, *clamping* de coordenadas `[0, 1]` e ordenação por confiança via `normalizeDetections`.
+  * Resumo semântico adaptado ao perfil via `summarizeDetectionsForProfile`:
+    * **`'home'` (Residencial):** Destaca a classe principal (`primaryLabel`, `primaryConfidence`) para sugestão imediata do nome do objeto.
+    * **`'business'` (B2B):** Contabiliza todas as instâncias detectadas (`totalDetected`, `countsByLabel`, `dominantLabel`) para preenchimento automático de lote.
+  * Contrato assíncrono `runYoloInference(input, runtimeAdapter)` pronto para acoplamento direto do runtime nativo `.tflite` (ex.: `react-native-fast-tflite` em *Development Build* via `npx expo run:android|ios`).
+* **Overlay Vetorial Nativo (`components/YoloCameraOverlay.js`):**
+  * Desenha *Bounding Boxes* vetoriais (`Svg`, `Rect` do `react-native-svg`) e pílulas de confiança com `tabular-nums` e cor de destaque `#c6f24e`, desmontando junto com a `CameraView` quando a aba Scanner está inativa para preservar bateria.
+
+### 🗃️ Banco de Dados Relacional (`armario.db` — Schema v5 Não-Destrutivo)
+Modelagem SQLite estruturada com integridade referencial ativa (`PRAGMA foreign_keys = ON`) e migração incremental idempotente via `PRAGMA table_info(items)` (`ALTER TABLE` sem perda de registros):
 * **Tabela `spaces`:** Armazena os cômodos ou setores físicos com auto-relacionamento (`id`, `name`, `parent_id`, `created_at`).
-* **Tabela `items`:** Armazena os itens com controle de volume, código comercial e fotografia nativa (`id`, `name`, `space_id`, `quantity`, `barcode`, `image_uri`, `created_at`), conectada à tabela `spaces` via **Foreign Key (`space_id`)** e consultada via `LEFT JOIN`.
+* **Tabela `items`:** Armazena os itens com controle de volume, código comercial e fotografia permanente (`id`, `name`, `space_id`, `quantity`, `barcode`, `image_uri`, `created_at`), conectada à tabela `spaces` via **Foreign Key (`space_id`)** e consultada via `LEFT JOIN`.
 
 ### 🏢 Hierarquia de Armazenagem (Drill-down Infinito)
 * Navegação em árvore de profundidade arbitrária utilizando a chave recursiva `parent_id` na tabela `spaces` (ex: `Quarto Casal > Closet > Gaveta 2` no modo Casa, ou `Estoque Central > Prateleira A > Caixa 04` no modo Negócio).
