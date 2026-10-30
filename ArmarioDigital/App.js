@@ -24,6 +24,26 @@ import {
   View,
 } from 'react-native';
 import {
+  ArrowLeft,
+  Barcode,
+  CameraOff,
+  ChevronRight,
+  Folder,
+  FolderOpen,
+  Layers,
+  MapPin,
+  Minus,
+  Package,
+  PackageOpen,
+  Plus,
+  ScanBarcode,
+  Search,
+  SearchX,
+  Trash2,
+  Warehouse,
+  X,
+} from 'lucide-react-native';
+import {
   initDatabase,
   addSpace,
   getSpaces,
@@ -36,32 +56,63 @@ import {
 
 const Tab = createBottomTabNavigator();
 
-const CORES = {
-  fundo: '#121212',
-  superficie: '#1e1e1e',
-  superficie2: '#2a2a2a',
-  borda: '#333333',
-  texto: '#ffffff',
-  textoSuave: '#9e9e9e',
-  primaria: '#00ffcc',
+/**
+ * Design Tokens estritos do estilo 'true-black-flat' (design-taste-frontend):
+ * - Elevação exclusivamente por degrau de luminosidade (#000000 -> #111111 -> #2a2a2a), sem bordas ou sombras em cards.
+ * - Cor de destaque (--accent: #c6f24e) restrita às marcas de dados (quantidades, códigos lidos e métricas).
+ * - Controles primários destacados por inversão: pílula branca (#ffffff) com texto preto (#000000).
+ * - Navegação ativa marcada apenas pela transição de luminosidade (#b4b4b4 -> #ffffff).
+ */
+const TOKENS = {
+  ground: '#000000',
+  surface: '#111111',
+  raised: '#2a2a2a',
+  border: '#1a1a1a',
+  rule: '#161616',
+  control: '#444444',
+  text: '#ffffff',
+  muted: '#b4b4b4',
+  faint: '#949494',
+  accent: '#c6f24e',
+  positive: '#c6f24e',
+  negative: '#e5484d',
+  warning: '#e5a93b',
+  pillPositiveBg: '#222a10',
+  pillPositiveInk: '#c6f24e',
+  pillNegativeBg: '#2c1a20',
+  pillNegativeInk: '#e5566f',
+  pillWarningBg: '#2b2414',
+  pillWarningInk: '#e5a93b',
+  pillNeutralBg: '#222222',
+  pillNeutralInk: '#ffffff',
+  radiusCard: 20,
+  radiusControl: 999,
+  gap: 14,
+  pad: 22,
+  controlHeight: 36,
+  fsTitle: 20,
+  fsSection: 16,
+  fsKpi: 24,
+  fsBody: 14,
+  fsSmall: 12,
 };
 
 const TEMA = {
   ...DarkTheme,
   colors: {
     ...DarkTheme.colors,
-    primary: CORES.primaria,
-    background: CORES.fundo,
-    card: CORES.superficie,
-    text: CORES.texto,
-    border: CORES.borda,
+    primary: TOKENS.text,
+    background: TOKENS.ground,
+    card: TOKENS.ground,
+    text: TOKENS.text,
+    border: TOKENS.rule,
   },
 };
 
 function formatarNomeEspaco(espaco) {
   if (!espaco) return '';
   return espaco.parent_name
-    ? `${espaco.parent_name} › ${espaco.name}`
+    ? `${espaco.parent_name} / ${espaco.name}`
     : espaco.name;
 }
 
@@ -82,7 +133,6 @@ function ScannerScreen({ onInventoryUpdated }) {
 
   const isFocused = useIsFocused();
 
-  // Recarrega os espaços disponíveis sempre que o usuário abre a aba Scanner
   useFocusEffect(
     useCallback(() => {
       let ativo = true;
@@ -106,12 +156,10 @@ function ScannerScreen({ onInventoryUpdated }) {
     }, [])
   );
 
-  // Evento disparado pela CameraView ao detectar código de barras/QR Code
   const handleBarcodeScanned = async ({ data }) => {
     const valorLido = String(data ?? '').trim();
     if (!valorLido) return;
 
-    // Controle de Spam: evita múltiplas leituras enquanto aponta para o mesmo código
     if (
       valorLido === lastScannedData ||
       valorLido === lastScannedRef.current ||
@@ -128,7 +176,6 @@ function ScannerScreen({ onInventoryUpdated }) {
       const itemExistente = await getItemByBarcode(valorLido);
 
       if (itemExistente) {
-        // Item encontrado: dispensa o formulário, incrementa +1 e recarrega o inventário
         const novaQtd = Number(itemExistente.quantity ?? 1) + 1;
         await updateItemQuantity(itemExistente.id, novaQtd);
 
@@ -155,7 +202,6 @@ function ScannerScreen({ onInventoryUpdated }) {
           ]
         );
       } else {
-        // Item não encontrado: define currentBarcode, vibra 1 vez e aguarda preenchimento manual
         setCurrentBarcode(valorLido);
         Vibration.vibrate(100);
         processandoScanRef.current = false;
@@ -213,7 +259,7 @@ function ScannerScreen({ onInventoryUpdated }) {
     if (!permission) {
       return (
         <View style={styles.cameraPlaceholder}>
-          <ActivityIndicator size="large" color={CORES.primaria} />
+          <ActivityIndicator size="large" color={TOKENS.text} />
         </View>
       );
     }
@@ -221,17 +267,17 @@ function ScannerScreen({ onInventoryUpdated }) {
     if (!permission.granted) {
       return (
         <View style={styles.cameraPlaceholder}>
-          <Text style={styles.placeholderIcon}>📷</Text>
+          <CameraOff size={28} color={TOKENS.muted} strokeWidth={1.5} />
           <Text style={styles.placeholderTitle}>Acesso à câmera</Text>
           <Text style={styles.placeholderText}>
-            Precisamos da sua permissão para mostrar a câmera.
+            Conceda permissão para ler códigos EAN, UPC, Code 128 e QR Code.
           </Text>
           <TouchableOpacity
-            style={styles.permissionButton}
-            activeOpacity={0.8}
+            style={styles.primaryInvertedPill}
+            activeOpacity={0.85}
             onPress={requestPermission}
           >
-            <Text style={styles.permissionButtonText}>Permitir acesso</Text>
+            <Text style={styles.primaryInvertedPillText}>Permitir acesso</Text>
           </TouchableOpacity>
         </View>
       );
@@ -256,16 +302,23 @@ function ScannerScreen({ onInventoryUpdated }) {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Câmera no topo */}
+      {/* Visor óptico no topo */}
       <View style={styles.cameraContainer}>{renderCamera()}</View>
 
-      {/* Formulário manual: Código escaneado + Nome/Quantidade + Seletor de Espaço */}
-      <View style={styles.form}>
+      {/* Painel de entrada em superfície #111111 sem bordas/sombras */}
+      <View style={styles.scannerSheet}>
         {currentBarcode && (
-          <View style={styles.scannedBarcodeBanner}>
-            <Text style={styles.scannedBarcodeText} numberOfLines={1}>
-              Código escaneado: {currentBarcode}
-            </Text>
+          <View style={styles.scannedBarcodePill}>
+            <View style={styles.scannedBarcodeLeft}>
+              <Barcode
+                size={16}
+                color={TOKENS.pillPositiveInk}
+                strokeWidth={1.5}
+              />
+              <Text style={styles.scannedBarcodeText} numberOfLines={1}>
+                Código escaneado: {currentBarcode}
+              </Text>
+            </View>
             <TouchableOpacity
               onPress={() => {
                 setCurrentBarcode(null);
@@ -275,20 +328,20 @@ function ScannerScreen({ onInventoryUpdated }) {
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.clearBarcodeText}>✕</Text>
+              <X size={16} color={TOKENS.pillPositiveInk} strokeWidth={1.5} />
             </TouchableOpacity>
           </View>
         )}
 
         <View style={styles.inputRow}>
           <View style={styles.nameColumn}>
-            <Text style={styles.label}>Nome do objeto</Text>
+            <Text style={styles.label}>Nome do produto</Text>
             <TextInput
               style={styles.input}
               value={nome}
               onChangeText={setNome}
-              placeholder="Ex: Caixa de Parafusos"
-              placeholderTextColor={CORES.textoSuave}
+              placeholder="Ex: Caixa de Parafusos M6"
+              placeholderTextColor={TOKENS.faint}
               maxLength={60}
               returnKeyType="done"
               onSubmitEditing={handleSalvar}
@@ -303,7 +356,7 @@ function ScannerScreen({ onInventoryUpdated }) {
               value={quantidade}
               onChangeText={(txt) => setQuantidade(txt.replace(/[^0-9]/g, ''))}
               placeholder="1"
-              placeholderTextColor={CORES.textoSuave}
+              placeholderTextColor={TOKENS.faint}
               keyboardType="numeric"
               maxLength={5}
               returnKeyType="done"
@@ -313,13 +366,12 @@ function ScannerScreen({ onInventoryUpdated }) {
           </View>
         </View>
 
-        {/* Seletor visual de Espaço logo acima do botão Salvar Item */}
-        <Text style={styles.label}>Guardar em qual Espaço?</Text>
+        <Text style={styles.label}>Local de armazenagem</Text>
         {espacos.length === 0 ? (
           <View style={styles.noSpacesBox}>
             <Text style={styles.noSpacesText}>
-              Nenhum espaço cadastrado. Crie locais na aba "Espaços" (ou salve
-              sem espaço).
+              Nenhum espaço cadastrado. Crie locais na aba Espaços ou salve sem
+              local.
             </Text>
           </View>
         ) : (
@@ -340,13 +392,18 @@ function ScannerScreen({ onInventoryUpdated }) {
                   activeOpacity={0.8}
                   onPress={() => setEspacoSelecionadoId(espaco.id)}
                 >
+                  <MapPin
+                    size={13}
+                    color={selecionado ? TOKENS.ground : TOKENS.muted}
+                    strokeWidth={1.5}
+                  />
                   <Text
                     style={[
                       styles.spaceChipText,
                       selecionado && styles.spaceChipTextActive,
                     ]}
                   >
-                    📍 {formatarNomeEspaco(espaco)}
+                    {formatarNomeEspaco(espaco)}
                   </Text>
                 </TouchableOpacity>
               );
@@ -365,7 +422,7 @@ function ScannerScreen({ onInventoryUpdated }) {
                   espacoSelecionadoId === null && styles.spaceChipTextActive,
                 ]}
               >
-                Sem espaço
+                Sem local
               </Text>
             </TouchableOpacity>
           </ScrollView>
@@ -373,17 +430,20 @@ function ScannerScreen({ onInventoryUpdated }) {
 
         <TouchableOpacity
           style={[
-            styles.saveButton,
-            (!nomeValido || aGuardar) && styles.saveButtonDisabled,
+            styles.primaryInvertedButton,
+            (!nomeValido || aGuardar) && styles.controlDisabled,
           ]}
           activeOpacity={0.85}
           onPress={handleSalvar}
           disabled={!nomeValido || aGuardar}
         >
           {aGuardar ? (
-            <ActivityIndicator color={CORES.fundo} />
+            <ActivityIndicator color={TOKENS.ground} />
           ) : (
-            <Text style={styles.saveButtonText}>Salvar Item</Text>
+            <View style={styles.buttonContentRow}>
+              <Plus size={16} color={TOKENS.ground} strokeWidth={1.75} />
+              <Text style={styles.primaryInvertedButtonText}>Salvar Item</Text>
+            </View>
           )}
         </TouchableOpacity>
       </View>
@@ -392,7 +452,7 @@ function ScannerScreen({ onInventoryUpdated }) {
 }
 
 /* ==========================================================
-   ABA 2: ESPAÇOS (Drill-down Hierárquico com currentParentId)
+   ABA 2: ESPAÇOS (Drill-down Hierárquico em True-Black Flat)
    ========================================================== */
 function EspacosScreen() {
   const [espacos, setEspacos] = useState([]);
@@ -419,17 +479,13 @@ function EspacosScreen() {
     }, [carregarEspacos])
   );
 
-  // Espaço pai atualmente aberto (quando currentParentId !== null)
   const espacoAtual = espacos.find((e) => e.id === currentParentId) || null;
-
-  // Filtra apenas os espaços cujo parent_id seja igual ao currentParentId
   const espacosFiltrados = espacos.filter(
     (e) => (e.parent_id ?? null) === currentParentId
   );
 
   const nomeValido = nomeEspaco.trim().length > 0;
 
-  // Sobe um nível na árvore hierárquica (ou volta para null na raiz)
   const handleVoltar = () => {
     if (espacoAtual) {
       setCurrentParentId(espacoAtual.parent_id ?? null);
@@ -461,18 +517,18 @@ function EspacosScreen() {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Botão '⬅️ Voltar' no topo (renderizado apenas quando currentParentId !== null) */}
       {currentParentId !== null && (
         <View style={styles.drilldownBar}>
           <TouchableOpacity
-            style={styles.backButton}
+            style={styles.secondaryPillButton}
             activeOpacity={0.8}
             onPress={handleVoltar}
           >
-            <Text style={styles.backButtonText}>⬅️ Voltar</Text>
+            <ArrowLeft size={15} color={TOKENS.text} strokeWidth={1.5} />
+            <Text style={styles.secondaryPillButtonText}>Voltar</Text>
           </TouchableOpacity>
           <View style={styles.breadcrumbBox}>
-            <Text style={styles.breadcrumbLabel}>Dentro de:</Text>
+            <Text style={styles.breadcrumbLabel}>Nível atual</Text>
             <Text style={styles.breadcrumbTitle} numberOfLines={1}>
               {espacoAtual ? formatarNomeEspaco(espacoAtual) : 'Sub-espaço'}
             </Text>
@@ -480,12 +536,11 @@ function EspacosScreen() {
         </View>
       )}
 
-      {/* Formulário para cadastrar espaço no nível atual */}
       <View style={styles.spaceFormCard}>
         <Text style={styles.label}>
           {currentParentId === null
-            ? 'Novo Espaço Principal (ex: Estoque Central)'
-            : `Novo Sub-espaço dentro de "${espacoAtual?.name || ''}" (ex: Armário 1)`}
+            ? 'Novo espaço principal (ex: Estoque Central)'
+            : `Novo sub-espaço em "${espacoAtual?.name || ''}" (ex: Prateleira A)`}
         </Text>
         <TextInput
           style={styles.input}
@@ -493,10 +548,10 @@ function EspacosScreen() {
           onChangeText={setNomeEspaco}
           placeholder={
             currentParentId === null
-              ? 'Ex: Estoque Central, Galpão A...'
-              : 'Ex: Armário 1, Prateleira B...'
+              ? 'Ex: Estoque Central, Galpão 01'
+              : 'Ex: Armário 1, Gaveta B'
           }
-          placeholderTextColor={CORES.textoSuave}
+          placeholderTextColor={TOKENS.faint}
           maxLength={50}
           returnKeyType="done"
           onSubmitEditing={handleAdicionarEspaco}
@@ -505,41 +560,40 @@ function EspacosScreen() {
 
         <TouchableOpacity
           style={[
-            styles.saveButton,
-            (!nomeValido || aCriar) && styles.saveButtonDisabled,
+            styles.primaryInvertedButton,
+            (!nomeValido || aCriar) && styles.controlDisabled,
           ]}
           activeOpacity={0.85}
           onPress={handleAdicionarEspaco}
           disabled={!nomeValido || aCriar}
         >
           {aCriar ? (
-            <ActivityIndicator color={CORES.fundo} />
+            <ActivityIndicator color={TOKENS.ground} />
           ) : (
-            <Text style={styles.saveButtonText}>
-              {currentParentId === null
-                ? '+ Cadastrar Espaço'
-                : '+ Cadastrar Sub-espaço'}
-            </Text>
+            <View style={styles.buttonContentRow}>
+              <Plus size={16} color={TOKENS.ground} strokeWidth={1.75} />
+              <Text style={styles.primaryInvertedButtonText}>
+                {currentParentId === null
+                  ? 'Cadastrar Espaço'
+                  : 'Cadastrar Sub-espaço'}
+              </Text>
+            </View>
           )}
         </TouchableOpacity>
       </View>
 
-      {/* Cabeçalho da lista filtrada */}
-      <View style={styles.listHeader}>
-        <Text style={styles.listTitle}>
+      <View style={styles.sectionToolbar}>
+        <Text style={styles.sectionHeading}>
           {currentParentId === null
-            ? 'Espaços Principais (Raiz)'
-            : `Sub-espaços de ${espacoAtual?.name || ''}`}
+            ? 'Espaços principais'
+            : `Divisões de ${espacoAtual?.name || ''}`}
         </Text>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>
-            {espacosFiltrados.length}{' '}
-            {espacosFiltrados.length === 1 ? 'local' : 'locais'}
-          </Text>
-        </View>
+        <Text style={styles.sectionCountText}>
+          {espacosFiltrados.length}{' '}
+          {espacosFiltrados.length === 1 ? 'local' : 'locais'}
+        </Text>
       </View>
 
-      {/* FlatList exibindo apenas os espaços com parent_id === currentParentId */}
       <FlatList
         data={espacosFiltrados}
         keyExtractor={(item) => String(item.id)}
@@ -554,36 +608,43 @@ function EspacosScreen() {
           const qtdSubespacos = espacos.filter(
             (sub) => sub.parent_id === item.id
           ).length;
+          const qtdItens = item.item_count ?? 0;
 
           return (
             <TouchableOpacity
-              style={styles.itemCard}
-              activeOpacity={0.75}
+              style={styles.spaceCard}
+              activeOpacity={0.78}
               onPress={() => setCurrentParentId(item.id)}
             >
-              <View style={styles.itemIconBox}>
-                <Text style={styles.itemIcon}>
-                  {item.parent_id ? '📂' : '🏠'}
-                </Text>
-              </View>
-              <View style={styles.itemInfo}>
-                <Text style={styles.itemName} numberOfLines={1}>
-                  {item.name}
-                </Text>
-                <Text style={styles.itemDate}>
-                  {qtdSubespacos > 0
-                    ? `${qtdSubespacos} ${qtdSubespacos === 1 ? 'sub-espaço' : 'sub-espaços'} • Toque para abrir`
-                    : 'Toque para entrar / adicionar sub-espaços'}
-                </Text>
-              </View>
-              <View style={styles.spaceRightBox}>
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {item.item_count ?? 0}{' '}
-                    {(item.item_count ?? 0) === 1 ? 'item' : 'itens'}
+              <View style={styles.spaceRowLeft}>
+                {item.parent_id ? (
+                  <Folder size={18} color={TOKENS.muted} strokeWidth={1.5} />
+                ) : (
+                  <Warehouse size={18} color={TOKENS.muted} strokeWidth={1.5} />
+                )}
+                <View style={styles.spaceTextColumn}>
+                  <Text style={styles.cardTitleText} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                  <Text style={styles.cardMetaText}>
+                    {qtdSubespacos > 0
+                      ? `${qtdSubespacos} ${qtdSubespacos === 1 ? 'sub-divisão' : 'sub-divisões'} · Toque para entrar`
+                      : 'Toque para abrir ou adicionar sub-divisões'}
                   </Text>
                 </View>
-                <Text style={styles.chevron}>›</Text>
+              </View>
+
+              <View style={styles.spaceRightBox}>
+                <View style={styles.neutralDataPill}>
+                  <Text style={styles.neutralDataPillText}>
+                    {qtdItens} {qtdItens === 1 ? 'item' : 'itens'}
+                  </Text>
+                </View>
+                <ChevronRight
+                  size={18}
+                  color={TOKENS.faint}
+                  strokeWidth={1.5}
+                />
               </View>
             </TouchableOpacity>
           );
@@ -591,18 +652,16 @@ function EspacosScreen() {
         ListEmptyComponent={
           !aCarregar && (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>
-                {currentParentId === null ? '🏠' : '📂'}
-              </Text>
+              <FolderOpen size={28} color={TOKENS.faint} strokeWidth={1.5} />
               <Text style={styles.emptyText}>
                 {currentParentId === null
-                  ? 'Nenhum espaço principal cadastrado.'
-                  : 'Nenhum sub-espaço neste local.'}
+                  ? 'Nenhum espaço principal cadastrado'
+                  : 'Nenhuma sub-divisão neste espaço'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {currentParentId === null
-                  ? 'Use o formulário acima para criar seu primeiro cômodo ou setor.'
-                  : 'Use o formulário acima para adicionar divisões (ex: Armário 1, Gaveta 2) ou toque em "⬅️ Voltar".'}
+                  ? 'Cadastre acima seu primeiro setor, galpão ou almoxarifado.'
+                  : 'Adicione prateleiras, armários ou caixas dentro deste local.'}
               </Text>
             </View>
           )
@@ -613,7 +672,7 @@ function EspacosScreen() {
 }
 
 /* ==========================================================
-   ABA 3: INVENTÁRIO (Busca B2B + Optimistic UI no Giro de Estoque)
+   ABA 3: INVENTÁRIO (True-Black Flat + Busca B2B + Optimistic UI)
    ========================================================== */
 function InventarioScreen({ refreshKey }) {
   const [items, setItems] = useState([]);
@@ -632,7 +691,6 @@ function InventarioScreen({ refreshKey }) {
     }
   }, []);
 
-  // Recarrega ao focar na aba, em tempo real ao buscar ou quando o Scanner soma/cadastra um item
   useFocusEffect(
     useCallback(() => {
       carregarItens(searchQuery);
@@ -660,7 +718,6 @@ function InventarioScreen({ refreshKey }) {
       await updateItemQuantity(item.id, novaQtd);
     } catch (error) {
       console.error('Erro ao aumentar quantidade:', error);
-      // Rollback em caso de erro no banco
       setItems((prev) =>
         prev.map((current) =>
           current.id === item.id ? { ...current, quantity: qtdAtual } : current
@@ -687,7 +744,6 @@ function InventarioScreen({ refreshKey }) {
       await updateItemQuantity(item.id, novaQtd);
     } catch (error) {
       console.error('Erro ao diminuir quantidade:', error);
-      // Rollback em caso de erro no banco
       setItems((prev) =>
         prev.map((current) =>
           current.id === item.id ? { ...current, quantity: qtdAtual } : current
@@ -739,33 +795,45 @@ function InventarioScreen({ refreshKey }) {
 
   return (
     <View style={styles.screen}>
-      {/* Cabeçalho com contadores */}
-      <View style={styles.listHeader}>
-        <Text style={styles.listTitle}>Total no inventário</Text>
-        <View style={styles.headerBadges}>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>
-              {items.length} {items.length === 1 ? 'item' : 'itens'}
-            </Text>
+      {/* KPI Strip (Padrão 'true-black-flat': container único dividido por hairline 1px #161616) */}
+      <View style={styles.kpiStripWrapper}>
+        <View style={styles.kpiStrip}>
+          <View style={styles.kpiCell}>
+            <Text style={styles.kpiLabel}>SKUs registrados</Text>
+            <View style={styles.kpiValueRow}>
+              <Text style={styles.kpiValue}>{items.length}</Text>
+              <Text style={styles.kpiUnit}>
+                {items.length === 1 ? 'item' : 'itens'}
+              </Text>
+            </View>
           </View>
-          <View style={styles.qtyHeaderBadge}>
-            <Text style={styles.qtyHeaderBadgeText}>
-              {totalUnidades} {totalUnidades === 1 ? 'un.' : 'uns.'}
-            </Text>
+
+          <View style={styles.kpiDivider} />
+
+          <View style={styles.kpiCell}>
+            <Text style={styles.kpiLabel}>Volume em estoque</Text>
+            <View style={styles.kpiValueRow}>
+              <Text style={[styles.kpiValue, styles.kpiValueAccent]}>
+                {totalUnidades}
+              </Text>
+              <Text style={styles.kpiUnit}>
+                {totalUnidades === 1 ? 'un.' : 'uns.'}
+              </Text>
+            </View>
           </View>
         </View>
       </View>
 
-      {/* Barra de Pesquisa fixada logo abaixo do cabeçalho */}
+      {/* Barra de Pesquisa fixa abaixo dos KPIs */}
       <View style={styles.searchBarContainer}>
         <View style={styles.searchInputWrapper}>
-          <Text style={styles.searchIcon}>🔍</Text>
+          <Search size={16} color={TOKENS.faint} strokeWidth={1.5} />
           <TextInput
             style={styles.searchInput}
             value={searchQuery}
             onChangeText={setSearchQuery}
             placeholder="Pesquisar item pelo nome..."
-            placeholderTextColor={CORES.textoSuave}
+            placeholderTextColor={TOKENS.faint}
             returnKeyType="search"
             autoCapitalize="none"
             autoCorrect={false}
@@ -776,7 +844,7 @@ function InventarioScreen({ refreshKey }) {
               onPress={() => setSearchQuery('')}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.clearSearchText}>✕</Text>
+              <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
             </TouchableOpacity>
           )}
         </View>
@@ -794,90 +862,120 @@ function InventarioScreen({ refreshKey }) {
         renderItem={({ item }) => {
           const qtd = Number(item.quantity ?? 1);
           const nomeLocal = item.space_name || 'Sem local definido';
+          const semEstoque = qtd === 0;
 
           return (
             <View style={styles.inventoryCard}>
-              {/* Linha principal: Ícone + Dados do Item + Badge de Quantidade */}
+              {/* Linha Superior: Identificação + Metadados + Pílula Semântica de Quantidade */}
               <View style={styles.inventoryCardTopRow}>
-                <View style={styles.itemIconBox}>
-                  <Text style={styles.itemIcon}>📦</Text>
-                </View>
-
                 <View style={styles.itemInfo}>
-                  <Text style={styles.itemName} numberOfLines={1}>
+                  <Text style={styles.cardTitleText} numberOfLines={1}>
                     {item.name}
                   </Text>
 
-                  <View style={styles.locationTag}>
-                    <Text style={styles.itemSpaceTag} numberOfLines={1}>
-                      📍 Local: {nomeLocal}
-                    </Text>
+                  <View style={styles.metaPillsRow}>
+                    <View style={styles.locationPill}>
+                      <MapPin
+                        size={12}
+                        color={TOKENS.muted}
+                        strokeWidth={1.5}
+                      />
+                      <Text style={styles.locationPillText} numberOfLines={1}>
+                        {nomeLocal}
+                      </Text>
+                    </View>
+
+                    {item.barcode ? (
+                      <View style={styles.barcodeMetaPill}>
+                        <Barcode
+                          size={12}
+                          color={TOKENS.faint}
+                          strokeWidth={1.5}
+                        />
+                        <Text
+                          style={styles.barcodeMetaPillText}
+                          numberOfLines={1}
+                        >
+                          {item.barcode}
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
 
-                  <Text style={styles.itemDate}>
-                    #{item.id} • {formatarData(item.created_at)}
+                  <Text style={styles.cardMetaText}>
+                    #{item.id} · {formatarData(item.created_at)}
                   </Text>
                 </View>
 
-                {/* Quantidade cadastrada destacada */}
+                {/* Marca de Dados: Pílula de Quantidade (--pill-positive ou --pill-warning quando zero) */}
                 <View
                   style={[
-                    styles.quantityBadge,
-                    qtd === 0 && styles.quantityBadgeZero,
+                    styles.quantityPill,
+                    semEstoque
+                      ? styles.quantityPillWarning
+                      : styles.quantityPillPositive,
                   ]}
                 >
                   <Text
                     style={[
-                      styles.quantityBadgeLabel,
-                      qtd === 0 && styles.quantityBadgeLabelZero,
+                      styles.quantityPillValue,
+                      semEstoque
+                        ? styles.quantityPillValueWarning
+                        : styles.quantityPillValuePositive,
                     ]}
                   >
-                    QTD
+                    {qtd}
                   </Text>
-                  <Text style={styles.quantityBadgeValue}>{qtd}</Text>
+                  <Text
+                    style={[
+                      styles.quantityPillUnit,
+                      semEstoque
+                        ? styles.quantityPillValueWarning
+                        : styles.quantityPillValuePositive,
+                    ]}
+                  >
+                    un.
+                  </Text>
                 </View>
               </View>
 
-              {/* Painel de ações rápido (Giro de Estoque: ➖, ➕ e 🗑️) */}
+              {/* Painel de Ações Rápidas (Giro de Estoque com ícones vetoriais Lucide) */}
               <View style={styles.actionPanel}>
                 <View style={styles.qtyActionsGroup}>
                   <TouchableOpacity
                     style={[
-                      styles.actionButton,
-                      qtd <= 0 && styles.actionButtonDisabled,
+                      styles.actionPillButton,
+                      qtd <= 0 && styles.controlDisabled,
                     ]}
                     activeOpacity={0.75}
                     onPress={() => handleDecrementar(item)}
                     disabled={qtd <= 0}
                   >
-                    <Text style={styles.actionButtonIcon}>➖</Text>
-                    <Text style={styles.actionButtonLabel}>Diminuir</Text>
+                    <Minus size={15} color={TOKENS.text} strokeWidth={1.5} />
+                    <Text style={styles.actionPillText}>Diminuir</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.actionButton, styles.actionButtonIncrement]}
-                    activeOpacity={0.75}
+                    style={styles.actionPillButtonPrimary}
+                    activeOpacity={0.8}
                     onPress={() => handleIncrementar(item)}
                   >
-                    <Text style={styles.actionButtonIcon}>➕</Text>
-                    <Text
-                      style={[
-                        styles.actionButtonLabel,
-                        styles.actionButtonIncrementLabel,
-                      ]}
-                    >
-                      Aumentar
-                    </Text>
+                    <Plus size={15} color={TOKENS.ground} strokeWidth={1.75} />
+                    <Text style={styles.actionPillTextPrimary}>Aumentar</Text>
                   </TouchableOpacity>
                 </View>
 
                 <TouchableOpacity
-                  style={[styles.actionButton, styles.actionButtonDelete]}
+                  style={styles.actionPillButtonDelete}
                   activeOpacity={0.75}
                   onPress={() => handleExcluir(item)}
                 >
-                  <Text style={styles.actionButtonIcon}>🗑️</Text>
-                  <Text style={styles.actionButtonDeleteLabel}>Excluir</Text>
+                  <Trash2
+                    size={15}
+                    color={TOKENS.pillNegativeInk}
+                    strokeWidth={1.5}
+                  />
+                  <Text style={styles.actionPillTextDelete}>Excluir</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -886,18 +984,20 @@ function InventarioScreen({ refreshKey }) {
         ListEmptyComponent={
           !aCarregar && (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>
-                {searchQuery.trim() ? '🔎' : '📭'}
-              </Text>
+              {searchQuery.trim() ? (
+                <SearchX size={28} color={TOKENS.faint} strokeWidth={1.5} />
+              ) : (
+                <PackageOpen size={28} color={TOKENS.faint} strokeWidth={1.5} />
+              )}
               <Text style={styles.emptyText}>
                 {searchQuery.trim()
-                  ? `Nenhum item encontrado para "${searchQuery.trim()}".`
-                  : 'Nenhum item no inventário.'}
+                  ? `Nenhum resultado para "${searchQuery.trim()}"`
+                  : 'Inventário vazio'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {searchQuery.trim()
-                  ? 'Tente buscar por outro termo ou limpe o filtro.'
-                  : 'Vá à aba "Scanner" para registrar objetos e suas quantidades.'}
+                  ? 'Tente outro termo de pesquisa ou limpe o filtro.'
+                  : 'Utilize a aba Scanner para bipar códigos ou cadastrar produtos.'}
               </Text>
             </View>
           )
@@ -910,10 +1010,6 @@ function InventarioScreen({ refreshKey }) {
 /* ==========================================================
    NAVEGAÇÃO PRINCIPAL (Scanner | Espaços | Inventário)
    ========================================================== */
-const tabIcon = (emoji) => ({ focused }) => (
-  <Text style={{ fontSize: 20, opacity: focused ? 1 : 0.5 }}>{emoji}</Text>
-);
-
 export default function App() {
   const [inventoryRefreshKey, setInventoryRefreshKey] = useState(0);
 
@@ -932,31 +1028,62 @@ export default function App() {
       <StatusBar style="light" />
       <Tab.Navigator
         screenOptions={{
-          headerStyle: { backgroundColor: CORES.superficie },
-          headerTintColor: CORES.texto,
-          headerTitleStyle: { fontWeight: '700' },
-          tabBarActiveTintColor: CORES.primaria,
-          tabBarInactiveTintColor: CORES.textoSuave,
+          headerStyle: {
+            backgroundColor: TOKENS.ground,
+            elevation: 0,
+            shadowOpacity: 0,
+            borderBottomWidth: 1,
+            borderBottomColor: TOKENS.rule,
+          },
+          headerTintColor: TOKENS.text,
+          headerTitleStyle: {
+            fontSize: TOKENS.fsTitle,
+            fontWeight: '600',
+            color: TOKENS.text,
+          },
+          // Regra 'true-black-flat': item ativo marcado apenas por luminosidade (#b4b4b4 -> #ffffff)
+          tabBarActiveTintColor: TOKENS.text,
+          tabBarInactiveTintColor: TOKENS.muted,
+          tabBarLabelStyle: {
+            fontSize: TOKENS.fsSmall,
+            fontWeight: '500',
+          },
           tabBarStyle: {
-            backgroundColor: CORES.superficie,
-            borderTopColor: CORES.borda,
+            backgroundColor: TOKENS.ground,
+            borderTopWidth: 1,
+            borderTopColor: TOKENS.rule,
+            elevation: 0,
           },
         }}
       >
         <Tab.Screen
           name="Scanner"
-          options={{ tabBarIcon: tabIcon('📷') }}
+          options={{
+            tabBarIcon: ({ color }) => (
+              <ScanBarcode size={18} color={color} strokeWidth={1.5} />
+            ),
+          }}
         >
           {() => <ScannerScreen onInventoryUpdated={handleInventoryUpdated} />}
         </Tab.Screen>
+
         <Tab.Screen
           name="Espaços"
           component={EspacosScreen}
-          options={{ tabBarIcon: tabIcon('🏠') }}
+          options={{
+            tabBarIcon: ({ color }) => (
+              <Layers size={18} color={color} strokeWidth={1.5} />
+            ),
+          }}
         />
+
         <Tab.Screen
           name="Inventário"
-          options={{ tabBarIcon: tabIcon('🗄️') }}
+          options={{
+            tabBarIcon: ({ color }) => (
+              <Package size={18} color={color} strokeWidth={1.5} />
+            ),
+          }}
         >
           {() => <InventarioScreen refreshKey={inventoryRefreshKey} />}
         </Tab.Screen>
@@ -968,13 +1095,13 @@ export default function App() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: CORES.fundo,
+    backgroundColor: TOKENS.ground,
   },
 
-  // Scanner
+  // Scanner e Câmera
   cameraContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: TOKENS.ground,
   },
   camera: {
     flex: 1,
@@ -983,80 +1110,158 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
-    backgroundColor: CORES.superficie,
-  },
-  placeholderIcon: {
-    fontSize: 40,
-    marginBottom: 8,
+    padding: TOKENS.pad,
+    backgroundColor: TOKENS.surface,
+    gap: 10,
   },
   placeholderTitle: {
-    color: CORES.texto,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 6,
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSection,
+    fontWeight: '600',
+    marginTop: 4,
   },
   placeholderText: {
-    color: CORES.textoSuave,
-    fontSize: 14,
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsBody,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 8,
+    maxWidth: 280,
+    lineHeight: 20,
   },
-  permissionButton: {
-    backgroundColor: CORES.primaria,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 10,
+  scannerSheet: {
+    padding: TOKENS.pad,
+    backgroundColor: TOKENS.surface,
   },
-  permissionButtonText: {
-    color: CORES.fundo,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  form: {
-    padding: 18,
-    backgroundColor: CORES.fundo,
-    borderTopWidth: 1,
-    borderTopColor: CORES.borda,
-  },
-  scannedBarcodeBanner: {
+  scannedBarcodePill: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(0, 255, 204, 0.14)',
-    borderWidth: 1,
-    borderColor: CORES.primaria,
-    borderRadius: 10,
+    backgroundColor: TOKENS.pillPositiveBg,
+    borderRadius: TOKENS.radiusControl,
     paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginBottom: 12,
+    paddingHorizontal: 14,
+    marginBottom: TOKENS.gap,
   },
-  scannedBarcodeText: {
-    color: CORES.primaria,
-    fontSize: 13,
-    fontWeight: '700',
+  scannedBarcodeLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     flex: 1,
     marginRight: 8,
   },
-  clearBarcodeText: {
-    color: CORES.textoSuave,
-    fontSize: 14,
-    fontWeight: '700',
+  scannedBarcodeText: {
+    color: TOKENS.pillPositiveInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+    flex: 1,
   },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 10,
+    gap: TOKENS.gap,
   },
   nameColumn: {
     flex: 1,
   },
   qtyColumn: {
-    width: 105,
+    width: 104,
   },
   qtyInput: {
     textAlign: 'center',
-    fontWeight: '700',
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  label: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: TOKENS.raised,
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    marginBottom: TOKENS.gap,
+  },
+  selectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: TOKENS.gap,
+  },
+  spaceChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.raised,
+    height: TOKENS.controlHeight,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
+  },
+  spaceChipActive: {
+    backgroundColor: TOKENS.text,
+  },
+  spaceChipText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+  },
+  spaceChipTextActive: {
+    color: TOKENS.ground,
+    fontWeight: '600',
+  },
+  noSpacesBox: {
+    backgroundColor: TOKENS.raised,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: TOKENS.gap,
+  },
+  noSpacesText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    lineHeight: 18,
+  },
+
+  // Botões Primários por Inversão ('true-black-flat': pílula branca #ffffff com texto #000000)
+  primaryInvertedButton: {
+    backgroundColor: TOKENS.text,
+    minHeight: 42,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: TOKENS.radiusControl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryInvertedButtonText: {
+    color: TOKENS.ground,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
+  },
+  primaryInvertedPill: {
+    backgroundColor: TOKENS.text,
+    height: TOKENS.controlHeight,
+    paddingHorizontal: 18,
+    borderRadius: TOKENS.radiusControl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryInvertedPillText: {
+    color: TOKENS.ground,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
+  },
+  buttonContentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  controlDisabled: {
+    opacity: 0.35,
   },
 
   // Drill-down de Espaços
@@ -1064,317 +1269,287 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: CORES.superficie2,
+    paddingVertical: 12,
+    backgroundColor: TOKENS.ground,
     borderBottomWidth: 1,
-    borderBottomColor: CORES.borda,
-    gap: 12,
+    borderBottomColor: TOKENS.rule,
+    gap: TOKENS.gap,
   },
-  backButton: {
-    backgroundColor: CORES.superficie,
-    paddingVertical: 8,
+  secondaryPillButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.raised,
+    height: TOKENS.controlHeight,
     paddingHorizontal: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: CORES.primaria,
+    borderRadius: TOKENS.radiusControl,
   },
-  backButtonText: {
-    color: CORES.primaria,
-    fontSize: 14,
-    fontWeight: '700',
+  secondaryPillButtonText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
   },
   breadcrumbBox: {
     flex: 1,
   },
   breadcrumbLabel: {
-    color: CORES.textoSuave,
-    fontSize: 11,
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
   },
   breadcrumbTitle: {
-    color: CORES.texto,
-    fontSize: 15,
-    fontWeight: '700',
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
   },
   spaceFormCard: {
-    padding: 18,
-    backgroundColor: CORES.superficie,
-    borderBottomWidth: 1,
-    borderBottomColor: CORES.borda,
+    marginHorizontal: 16,
+    marginTop: TOKENS.gap,
+    padding: TOKENS.pad,
+    backgroundColor: TOKENS.surface,
+    borderRadius: TOKENS.radiusCard,
   },
-  label: {
-    color: CORES.textoSuave,
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: CORES.superficie2,
-    color: CORES.texto,
-    fontSize: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: CORES.borda,
-    marginBottom: 12,
-  },
-  selectorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingBottom: 14,
-  },
-  spaceChip: {
-    backgroundColor: CORES.superficie2,
-    paddingVertical: 9,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: CORES.borda,
-    marginRight: 8,
-  },
-  spaceChipActive: {
-    backgroundColor: 'rgba(0, 255, 204, 0.16)',
-    borderColor: CORES.primaria,
-  },
-  spaceChipText: {
-    color: CORES.textoSuave,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  spaceChipTextActive: {
-    color: CORES.primaria,
-    fontWeight: '700',
-  },
-  noSpacesBox: {
-    backgroundColor: CORES.superficie,
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: CORES.borda,
-  },
-  noSpacesText: {
-    color: CORES.textoSuave,
-    fontSize: 12,
-  },
-  saveButton: {
-    backgroundColor: CORES.primaria,
-    paddingVertical: 15,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  saveButtonDisabled: {
-    opacity: 0.4,
-  },
-  saveButtonText: {
-    color: CORES.fundo,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-
-  // Listas (Espaços e Inventário)
-  listHeader: {
+  sectionToolbar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: CORES.superficie,
-    borderBottomWidth: 1,
-    borderBottomColor: CORES.borda,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 6,
   },
-  listTitle: {
-    color: CORES.texto,
-    fontSize: 15,
+  sectionHeading: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSection,
     fontWeight: '600',
-    flex: 1,
-    marginRight: 8,
   },
-  headerBadges: {
+  sectionCountText: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    fontVariant: ['tabular-nums'],
+  },
+  spaceCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'space-between',
+    backgroundColor: TOKENS.surface,
+    padding: 18,
+    borderRadius: TOKENS.radiusCard,
+    marginBottom: TOKENS.gap,
   },
-  badge: {
-    backgroundColor: 'rgba(0, 255, 204, 0.15)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  badgeText: {
-    color: CORES.primaria,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  qtyHeaderBadge: {
-    backgroundColor: CORES.primaria,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  qtyHeaderBadgeText: {
-    color: CORES.fundo,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  // Barra de Pesquisa do Inventário
-  searchBarContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: CORES.superficie,
-    borderBottomWidth: 1,
-    borderBottomColor: CORES.borda,
-  },
-  searchInputWrapper: {
+  spaceRowLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: CORES.superficie2,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: CORES.borda,
-    paddingHorizontal: 12,
-  },
-  searchIcon: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    color: CORES.texto,
-    fontSize: 15,
-    paddingVertical: 11,
-  },
-  clearSearchButton: {
-    padding: 4,
-    marginLeft: 6,
-  },
-  clearSearchText: {
-    color: CORES.textoSuave,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  listContent: {
-    padding: 16,
-  },
-  emptyContainer: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    padding: 24,
-  },
-  itemCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: CORES.superficie,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2e2e2e',
-    marginBottom: 10,
-  },
-  itemIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 10,
-    backgroundColor: CORES.superficie2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  itemIcon: {
-    fontSize: 20,
-  },
-  itemInfo: {
+    gap: 12,
     flex: 1,
     marginRight: 10,
   },
-  itemName: {
-    color: CORES.texto,
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  locationTag: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(0, 255, 204, 0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    marginBottom: 4,
-  },
-  itemSpaceTag: {
-    color: CORES.primaria,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  itemDate: {
-    color: CORES.textoSuave,
-    fontSize: 12,
+  spaceTextColumn: {
+    flex: 1,
   },
   spaceRightBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  chevron: {
-    color: CORES.textoSuave,
-    fontSize: 22,
-    fontWeight: '600',
+  neutralDataPill: {
+    backgroundColor: TOKENS.pillNeutralBg,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: TOKENS.radiusControl,
+  },
+  neutralDataPillText: {
+    color: TOKENS.pillNeutralInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+    fontVariant: ['tabular-nums'],
   },
 
-  // Card do Inventário e Painel de Ações Rápidas (Giro de Estoque)
+  // Inventário — KPI Strip ('true-black-flat')
+  kpiStripWrapper: {
+    paddingHorizontal: 16,
+    paddingTop: TOKENS.gap,
+  },
+  kpiStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: TOKENS.surface,
+    borderRadius: TOKENS.radiusCard,
+    paddingVertical: 16,
+  },
+  kpiCell: {
+    flex: 1,
+    paddingHorizontal: TOKENS.pad,
+  },
+  kpiDivider: {
+    width: 1,
+    alignSelf: 'stretch',
+    backgroundColor: TOKENS.rule,
+  },
+  kpiLabel: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '400',
+    marginBottom: 4,
+  },
+  kpiValueRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+  },
+  kpiValue: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsKpi,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  kpiValueAccent: {
+    color: TOKENS.accent,
+  },
+  kpiUnit: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '400',
+  },
+
+  // Barra de Pesquisa do Inventário
+  searchBarContainer: {
+    paddingHorizontal: 16,
+    paddingTop: TOKENS.gap,
+    paddingBottom: 6,
+  },
+  searchInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: TOKENS.surface,
+    borderRadius: TOKENS.radiusControl,
+    paddingHorizontal: 16,
+    height: 42,
+    gap: 10,
+  },
+  searchInput: {
+    flex: 1,
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    paddingVertical: 0,
+  },
+  clearSearchButton: {
+    padding: 4,
+  },
+
+  // Listas e Cards do Inventário ('true-black-flat': surface #111111, radius 20, sem borda, sem sombra)
+  listContent: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 24,
+  },
+  emptyContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    padding: TOKENS.pad,
+  },
   inventoryCard: {
-    backgroundColor: CORES.superficie,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2e2e2e',
-    marginBottom: 12,
+    backgroundColor: TOKENS.surface,
+    padding: TOKENS.pad,
+    borderRadius: TOKENS.radiusCard,
+    marginBottom: TOKENS.gap,
   },
   inventoryCardTopRow: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  itemInfo: {
+    flex: 1,
+  },
+  cardTitleText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSection,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  metaPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  locationPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: TOKENS.pillNeutralBg,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: TOKENS.radiusControl,
+  },
+  locationPillText: {
+    color: TOKENS.pillNeutralInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+  },
+  barcodeMetaPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: TOKENS.raised,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: TOKENS.radiusControl,
+  },
+  barcodeMetaPillText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontVariant: ['tabular-nums'],
+  },
+  cardMetaText: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    fontVariant: ['tabular-nums'],
   },
 
-  // Badge de quantidade destacada no card do Inventário
-  quantityBadge: {
-    minWidth: 56,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: 'rgba(0, 255, 204, 0.14)',
-    borderWidth: 1,
-    borderColor: CORES.primaria,
-    alignItems: 'center',
+  // Pílula de Quantidade (Marca de dados principal no card)
+  quantityPill: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
     justifyContent: 'center',
+    gap: 3,
+    minWidth: 64,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
   },
-  quantityBadgeZero: {
-    backgroundColor: 'rgba(255, 152, 0, 0.14)',
-    borderColor: '#ff9800',
+  quantityPillPositive: {
+    backgroundColor: TOKENS.pillPositiveBg,
   },
-  quantityBadgeLabel: {
-    color: CORES.primaria,
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 0.5,
+  quantityPillWarning: {
+    backgroundColor: TOKENS.pillWarningBg,
   },
-  quantityBadgeLabelZero: {
-    color: '#ff9800',
+  quantityPillValue: {
+    fontSize: 18,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
-  quantityBadgeValue: {
-    color: CORES.texto,
-    fontSize: 16,
-    fontWeight: '800',
+  quantityPillUnit: {
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
   },
+  quantityPillValuePositive: {
+    color: TOKENS.pillPositiveInk,
+  },
+  quantityPillValueWarning: {
+    color: TOKENS.pillWarningInk,
+  },
+
+  // Painel de Ações Rápidas (Separado por hairline 1px #161616)
   actionPanel: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 12,
-    paddingTop: 10,
+    marginTop: 16,
+    paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
+    borderTopColor: TOKENS.rule,
     gap: 8,
   },
   qtyActionsGroup: {
@@ -1382,64 +1557,69 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  actionButton: {
+  actionPillButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CORES.superficie2,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: CORES.borda,
     gap: 6,
+    backgroundColor: TOKENS.raised,
+    height: TOKENS.controlHeight,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
   },
-  actionButtonDisabled: {
-    opacity: 0.35,
+  actionPillText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
   },
-  actionButtonIncrement: {
-    backgroundColor: 'rgba(0, 255, 204, 0.12)',
-    borderColor: CORES.primaria,
+  actionPillButtonPrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.text,
+    height: TOKENS.controlHeight,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
   },
-  actionButtonDelete: {
-    backgroundColor: 'rgba(255, 82, 82, 0.12)',
-    borderColor: 'rgba(255, 82, 82, 0.45)',
-  },
-  actionButtonIcon: {
-    fontSize: 13,
-  },
-  actionButtonLabel: {
-    color: CORES.texto,
-    fontSize: 12,
+  actionPillTextPrimary: {
+    color: TOKENS.ground,
+    fontSize: TOKENS.fsSmall,
     fontWeight: '600',
   },
-  actionButtonIncrementLabel: {
-    color: CORES.primaria,
-    fontWeight: '700',
+  actionPillButtonDelete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.pillNegativeBg,
+    height: TOKENS.controlHeight,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
   },
-  actionButtonDeleteLabel: {
-    color: '#ff6b6b',
-    fontSize: 12,
-    fontWeight: '700',
+  actionPillTextDelete: {
+    color: TOKENS.pillNegativeInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
   },
 
+  // Estados vazios honestos (sem emojis)
   emptyState: {
     alignItems: 'center',
-  },
-  emptyIcon: {
-    fontSize: 40,
-    marginBottom: 8,
+    gap: 8,
   },
   emptyText: {
-    color: '#e0e0e0',
-    fontSize: 16,
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSection,
     fontWeight: '600',
-    marginBottom: 4,
+    marginTop: 4,
     textAlign: 'center',
   },
   emptySubtext: {
-    color: '#888888',
-    fontSize: 13,
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsBody,
     textAlign: 'center',
+    maxWidth: 280,
+    lineHeight: 20,
   },
 });
