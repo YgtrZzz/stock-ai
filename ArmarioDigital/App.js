@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   NavigationContainer,
   DarkTheme,
@@ -26,16 +34,21 @@ import {
 import {
   ArrowLeft,
   Barcode,
+  Building2,
+  Camera,
   CameraOff,
+  Check,
   ChevronRight,
   Folder,
   FolderOpen,
+  Home,
   Layers,
   MapPin,
   Minus,
   Package,
   PackageOpen,
   Plus,
+  RefreshCw,
   ScanBarcode,
   Search,
   SearchX,
@@ -55,6 +68,17 @@ import {
 } from './database';
 
 const Tab = createBottomTabNavigator();
+
+const STORAGE_KEY_PROFILE = '@armario_digital:user_profile';
+
+/**
+ * Contexto global de Perfil de Uso ('home' | 'business' | null)
+ */
+const ProfileContext = createContext({
+  userProfile: null,
+  selectProfile: async () => {},
+  resetProfile: async () => {},
+});
 
 /**
  * Design Tokens estritos do estilo 'true-black-flat' (design-taste-frontend):
@@ -109,6 +133,8 @@ const TEMA = {
   },
 };
 
+const LOTES_RAPIDOS_B2B = [1, 5, 10, 25];
+
 function formatarNomeEspaco(espaco) {
   if (!espaco) return '';
   return espaco.parent_name
@@ -117,16 +143,125 @@ function formatarNomeEspaco(espaco) {
 }
 
 /* ==========================================================
-   ABA 1: SCANNER (Câmera + Soma Automática por Barcode + Formulário)
+   TELA DE ONBOARDING (Seleção de Perfil: 'home' | 'business')
+   ========================================================== */
+function OnboardingScreen({ onSelectProfile }) {
+  const [salvandoPerfil, setSalvandoPerfil] = useState(null);
+
+  const handleEscolher = async (perfil) => {
+    if (salvandoPerfil) return;
+    setSalvandoPerfil(perfil);
+    try {
+      await onSelectProfile(perfil);
+    } finally {
+      setSalvandoPerfil(null);
+    }
+  };
+
+  return (
+    <View style={styles.onboardingScreen}>
+      <StatusBar style="light" />
+      <View style={styles.onboardingContent}>
+        <Text style={styles.onboardingBrand}>Armário Digital</Text>
+        <Text style={styles.onboardingTitle}>
+          Como você vai usar o Armário Digital?
+        </Text>
+        <Text style={styles.onboardingSubtitle}>
+          Escolha o modo ideal para adaptar a câmera e os controles ao seu
+          fluxo.
+        </Text>
+
+        <View style={styles.onboardingCardsGroup}>
+          {/* Opção 1: Uso Pessoal ('home') */}
+          <TouchableOpacity
+            style={styles.onboardingCard}
+            activeOpacity={0.82}
+            onPress={() => handleEscolher('home')}
+            disabled={Boolean(salvandoPerfil)}
+          >
+            <View style={styles.onboardingCardHeader}>
+              <Home size={22} color={TOKENS.text} strokeWidth={1.5} />
+              <View style={styles.onboardingModePill}>
+                <Text style={styles.onboardingModePillText}>Residencial</Text>
+              </View>
+            </View>
+
+            <Text style={styles.onboardingCardTitle}>
+              Uso Pessoal (Organizar minha casa)
+            </Text>
+            <Text style={styles.onboardingCardDesc}>
+              Capture fotos rápidas de objetos domésticos, roupas, ferramentas e
+              caixas organizadoras por cômodo e armário.
+            </Text>
+
+            <View style={styles.onboardingActionRow}>
+              <View style={styles.primaryInvertedPill}>
+                <Text style={styles.primaryInvertedPillText}>
+                  {salvandoPerfil === 'home'
+                    ? 'Configurando...'
+                    : 'Selecionar Uso Pessoal'}
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+
+          {/* Opção 2: Para meu Negócio ('business') */}
+          <TouchableOpacity
+            style={styles.onboardingCard}
+            activeOpacity={0.82}
+            onPress={() => handleEscolher('business')}
+            disabled={Boolean(salvandoPerfil)}
+          >
+            <View style={styles.onboardingCardHeader}>
+              <Building2 size={22} color={TOKENS.text} strokeWidth={1.5} />
+              <View style={styles.onboardingModePillAccent}>
+                <Text style={styles.onboardingModePillAccentText}>B2B</Text>
+              </View>
+            </View>
+
+            <Text style={styles.onboardingCardTitle}>
+              Para meu Negócio (Controle de estoque)
+            </Text>
+            <Text style={styles.onboardingCardDesc}>
+              Leitor nativo de código de barras e QR Code com soma automática de
+              SKUs e atalhos rápidos de lote.
+            </Text>
+
+            <View style={styles.onboardingActionRow}>
+              <View style={styles.primaryInvertedPill}>
+                <Text style={styles.primaryInvertedPillText}>
+                  {salvandoPerfil === 'business'
+                    ? 'Configurando...'
+                    : 'Selecionar Para meu Negócio'}
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/* ==========================================================
+   ABA 1: SCANNER (Adaptação Dinâmica: 'home' vs 'business')
    ========================================================== */
 function ScannerScreen({ onInventoryUpdated }) {
+  const { userProfile } = useContext(ProfileContext);
+  const isHome = userProfile === 'home';
+  const isBusiness = userProfile === 'business';
+
   const [permission, requestPermission] = useCameraPermissions();
   const [nome, setNome] = useState('');
   const [quantidade, setQuantidade] = useState('1');
   const [currentBarcode, setCurrentBarcode] = useState(null);
+  const [fotoCapturadaUri, setFotoCapturadaUri] = useState(null);
+  const [aCapturarFoto, setACapturarFoto] = useState(false);
   const [lastScannedData, setLastScannedData] = useState('');
   const lastScannedRef = useRef('');
   const processandoScanRef = useRef(false);
+  const cameraRef = useRef(null);
+  const inputNomeRef = useRef(null);
   const [espacos, setEspacos] = useState([]);
   const [espacoSelecionadoId, setEspacoSelecionadoId] = useState(null);
   const [aGuardar, setAGuardar] = useState(false);
@@ -156,7 +291,10 @@ function ScannerScreen({ onInventoryUpdated }) {
     }, [])
   );
 
+  // Leitura de Código de Barras (Ativo exclusivamente no perfil 'business')
   const handleBarcodeScanned = async ({ data }) => {
+    if (!isBusiness) return;
+
     const valorLido = String(data ?? '').trim();
     if (!valorLido) return;
 
@@ -212,6 +350,39 @@ function ScannerScreen({ onInventoryUpdated }) {
     }
   };
 
+  // Captura de foto do item (Destaque do perfil 'home')
+  const handleTirarFotoItem = async () => {
+    if (aCapturarFoto) return;
+
+    setACapturarFoto(true);
+    try {
+      if (cameraRef.current?.takePictureAsync) {
+        const foto = await cameraRef.current.takePictureAsync({
+          quality: 0.65,
+        });
+        setFotoCapturadaUri(foto?.uri || 'capturada');
+      } else {
+        setFotoCapturadaUri('capturada');
+      }
+      Vibration.vibrate(80);
+      inputNomeRef.current?.focus();
+    } catch (error) {
+      console.error('Erro ao capturar foto do item:', error);
+      setFotoCapturadaUri('capturada');
+      Vibration.vibrate(80);
+      inputNomeRef.current?.focus();
+    } finally {
+      setACapturarFoto(false);
+    }
+  };
+
+  // Atalho de controle rápido de lote (Perfil 'business')
+  const handleSomarLote = (incremento) => {
+    const atual = parseInt(quantidade.replace(/[^0-9]/g, ''), 10);
+    const base = Number.isFinite(atual) && atual > 0 ? atual : 0;
+    setQuantidade(String(base + incremento));
+  };
+
   const nomeValido = nome.trim().length > 0;
 
   const handleSalvar = async () => {
@@ -227,7 +398,7 @@ function ScannerScreen({ onInventoryUpdated }) {
         nomeLimpo,
         espacoSelecionadoId,
         qtdFinal,
-        currentBarcode
+        isBusiness ? currentBarcode : null
       );
       const espacoEscolhido = espacos.find((e) => e.id === espacoSelecionadoId);
       const destinoTexto = espacoEscolhido
@@ -237,6 +408,7 @@ function ScannerScreen({ onInventoryUpdated }) {
       setNome('');
       setQuantidade('1');
       setCurrentBarcode(null);
+      setFotoCapturadaUri(null);
       lastScannedRef.current = '';
       setLastScannedData('');
       processandoScanRef.current = false;
@@ -270,7 +442,9 @@ function ScannerScreen({ onInventoryUpdated }) {
           <CameraOff size={28} color={TOKENS.muted} strokeWidth={1.5} />
           <Text style={styles.placeholderTitle}>Acesso à câmera</Text>
           <Text style={styles.placeholderText}>
-            Conceda permissão para ler códigos EAN, UPC, Code 128 e QR Code.
+            {isHome
+              ? 'Conceda permissão para fotografar e catalogar os itens da sua casa.'
+              : 'Conceda permissão para ler códigos EAN, UPC, Code 128 e QR Code.'}
           </Text>
           <TouchableOpacity
             style={styles.primaryInvertedPill}
@@ -285,12 +459,24 @@ function ScannerScreen({ onInventoryUpdated }) {
 
     return isFocused ? (
       <CameraView
+        ref={cameraRef}
         style={styles.camera}
         facing="back"
-        barcodeScannerSettings={{
-          barcodeTypes: ['qr', 'ean13', 'ean8', 'upc_a', 'upc_e', 'code128'],
-        }}
-        onBarcodeScanned={handleBarcodeScanned}
+        barcodeScannerSettings={
+          isBusiness
+            ? {
+                barcodeTypes: [
+                  'qr',
+                  'ean13',
+                  'ean8',
+                  'upc_a',
+                  'upc_e',
+                  'code128',
+                ],
+              }
+            : undefined
+        }
+        onBarcodeScanned={isBusiness ? handleBarcodeScanned : undefined}
       />
     ) : (
       <View style={styles.cameraPlaceholder} />
@@ -305,9 +491,62 @@ function ScannerScreen({ onInventoryUpdated }) {
       {/* Visor óptico no topo */}
       <View style={styles.cameraContainer}>{renderCamera()}</View>
 
-      {/* Painel de entrada em superfície #111111 sem bordas/sombras */}
+      {/* Painel adaptado dinamicamente ao perfil ('home' vs 'business') */}
       <View style={styles.scannerSheet}>
-        {currentBarcode && (
+        {/* PERFIL HOME: Destaque visual para o grande botão 'Tirar Foto do Item' */}
+        {isHome && (
+          <View style={styles.homeCaptureSection}>
+            <TouchableOpacity
+              style={[
+                styles.capturePhotoHeroButton,
+                (!permission?.granted || aCapturarFoto) &&
+                  styles.controlDisabled,
+              ]}
+              activeOpacity={0.85}
+              onPress={handleTirarFotoItem}
+              disabled={!permission?.granted || aCapturarFoto}
+            >
+              {aCapturarFoto ? (
+                <ActivityIndicator color={TOKENS.ground} />
+              ) : (
+                <View style={styles.buttonContentRow}>
+                  <Camera size={18} color={TOKENS.ground} strokeWidth={1.75} />
+                  <Text style={styles.capturePhotoHeroButtonText}>
+                    Tirar Foto do Item
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            {fotoCapturadaUri && (
+              <View style={styles.scannedBarcodePill}>
+                <View style={styles.scannedBarcodeLeft}>
+                  <Check
+                    size={15}
+                    color={TOKENS.pillPositiveInk}
+                    strokeWidth={1.75}
+                  />
+                  <Text style={styles.scannedBarcodeText} numberOfLines={1}>
+                    Foto capturada · Informe o nome abaixo para salvar
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setFotoCapturadaUri(null)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <X
+                    size={15}
+                    color={TOKENS.pillPositiveInk}
+                    strokeWidth={1.5}
+                  />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* PERFIL BUSINESS: Banner de Código de Barras Escaneado */}
+        {isBusiness && currentBarcode && (
           <View style={styles.scannedBarcodePill}>
             <View style={styles.scannedBarcodeLeft}>
               <Barcode
@@ -335,12 +574,19 @@ function ScannerScreen({ onInventoryUpdated }) {
 
         <View style={styles.inputRow}>
           <View style={styles.nameColumn}>
-            <Text style={styles.label}>Nome do produto</Text>
+            <Text style={styles.label}>
+              {isHome ? 'Nome do item doméstico' : 'Nome do produto (SKU)'}
+            </Text>
             <TextInput
+              ref={inputNomeRef}
               style={styles.input}
               value={nome}
               onChangeText={setNome}
-              placeholder="Ex: Caixa de Parafusos M6"
+              placeholder={
+                isHome
+                  ? 'Ex: Casaco de Inverno, Furadeira'
+                  : 'Ex: Caixa de Parafusos M6'
+              }
               placeholderTextColor={TOKENS.faint}
               maxLength={60}
               returnKeyType="done"
@@ -366,7 +612,35 @@ function ScannerScreen({ onInventoryUpdated }) {
           </View>
         </View>
 
-        <Text style={styles.label}>Local de armazenagem</Text>
+        {/* PERFIL BUSINESS: Botões de controle rápido de lote */}
+        {isBusiness && (
+          <View style={styles.batchControlsRow}>
+            <Text style={styles.batchLabel}>Lote rápido:</Text>
+            <View style={styles.batchPillsGroup}>
+              {LOTES_RAPIDOS_B2B.map((valor) => (
+                <TouchableOpacity
+                  key={valor}
+                  style={styles.batchPill}
+                  activeOpacity={0.78}
+                  onPress={() => handleSomarLote(valor)}
+                >
+                  <Text style={styles.batchPillText}>+{valor}</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                style={styles.batchPillReset}
+                activeOpacity={0.78}
+                onPress={() => setQuantidade('1')}
+              >
+                <Text style={styles.batchPillResetText}>1 un.</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        <Text style={styles.label}>
+          {isHome ? 'Guardar em qual cômodo/local?' : 'Local de armazenagem'}
+        </Text>
         {espacos.length === 0 ? (
           <View style={styles.noSpacesBox}>
             <Text style={styles.noSpacesText}>
@@ -430,7 +704,7 @@ function ScannerScreen({ onInventoryUpdated }) {
 
         <TouchableOpacity
           style={[
-            styles.primaryInvertedButton,
+            isHome ? styles.secondarySaveButton : styles.primaryInvertedButton,
             (!nomeValido || aGuardar) && styles.controlDisabled,
           ]}
           activeOpacity={0.85}
@@ -438,11 +712,25 @@ function ScannerScreen({ onInventoryUpdated }) {
           disabled={!nomeValido || aGuardar}
         >
           {aGuardar ? (
-            <ActivityIndicator color={TOKENS.ground} />
+            <ActivityIndicator
+              color={isHome ? TOKENS.text : TOKENS.ground}
+            />
           ) : (
             <View style={styles.buttonContentRow}>
-              <Plus size={16} color={TOKENS.ground} strokeWidth={1.75} />
-              <Text style={styles.primaryInvertedButtonText}>Salvar Item</Text>
+              <Plus
+                size={16}
+                color={isHome ? TOKENS.text : TOKENS.ground}
+                strokeWidth={1.75}
+              />
+              <Text
+                style={
+                  isHome
+                    ? styles.secondarySaveButtonText
+                    : styles.primaryInvertedButtonText
+                }
+              >
+                Salvar Item
+              </Text>
             </View>
           )}
         </TouchableOpacity>
@@ -455,6 +743,9 @@ function ScannerScreen({ onInventoryUpdated }) {
    ABA 2: ESPAÇOS (Drill-down Hierárquico em True-Black Flat)
    ========================================================== */
 function EspacosScreen() {
+  const { userProfile } = useContext(ProfileContext);
+  const isHome = userProfile === 'home';
+
   const [espacos, setEspacos] = useState([]);
   const [currentParentId, setCurrentParentId] = useState(null);
   const [nomeEspaco, setNomeEspaco] = useState('');
@@ -539,8 +830,10 @@ function EspacosScreen() {
       <View style={styles.spaceFormCard}>
         <Text style={styles.label}>
           {currentParentId === null
-            ? 'Novo espaço principal (ex: Estoque Central)'
-            : `Novo sub-espaço em "${espacoAtual?.name || ''}" (ex: Prateleira A)`}
+            ? isHome
+              ? 'Novo cômodo principal (ex: Quarto Casal, Cozinha)'
+              : 'Novo espaço principal (ex: Estoque Central)'
+            : `Novo sub-espaço em "${espacoAtual?.name || ''}"`}
         </Text>
         <TextInput
           style={styles.input}
@@ -548,8 +841,10 @@ function EspacosScreen() {
           onChangeText={setNomeEspaco}
           placeholder={
             currentParentId === null
-              ? 'Ex: Estoque Central, Galpão 01'
-              : 'Ex: Armário 1, Gaveta B'
+              ? isHome
+                ? 'Ex: Closet, Garagem, Despensa'
+                : 'Ex: Estoque Central, Galpão 01'
+              : 'Ex: Armário 1, Prateleira B, Caixa 2'
           }
           placeholderTextColor={TOKENS.faint}
           maxLength={50}
@@ -585,7 +880,9 @@ function EspacosScreen() {
       <View style={styles.sectionToolbar}>
         <Text style={styles.sectionHeading}>
           {currentParentId === null
-            ? 'Espaços principais'
+            ? isHome
+              ? 'Cômodos principais'
+              : 'Espaços principais'
             : `Divisões de ${espacoAtual?.name || ''}`}
         </Text>
         <Text style={styles.sectionCountText}>
@@ -619,6 +916,8 @@ function EspacosScreen() {
               <View style={styles.spaceRowLeft}>
                 {item.parent_id ? (
                   <Folder size={18} color={TOKENS.muted} strokeWidth={1.5} />
+                ) : isHome ? (
+                  <Home size={18} color={TOKENS.muted} strokeWidth={1.5} />
                 ) : (
                   <Warehouse size={18} color={TOKENS.muted} strokeWidth={1.5} />
                 )}
@@ -660,7 +959,9 @@ function EspacosScreen() {
               </Text>
               <Text style={styles.emptySubtext}>
                 {currentParentId === null
-                  ? 'Cadastre acima seu primeiro setor, galpão ou almoxarifado.'
+                  ? isHome
+                    ? 'Cadastre acima seu primeiro cômodo (ex: Quarto, Cozinha, Garagem).'
+                    : 'Cadastre acima seu primeiro setor, galpão ou almoxarifado.'
                   : 'Adicione prateleiras, armários ou caixas dentro deste local.'}
               </Text>
             </View>
@@ -672,9 +973,12 @@ function EspacosScreen() {
 }
 
 /* ==========================================================
-   ABA 3: INVENTÁRIO (True-Black Flat + Busca B2B + Optimistic UI)
+   ABA 3: INVENTÁRIO (True-Black Flat + Busca + Optimistic UI)
    ========================================================== */
 function InventarioScreen({ refreshKey }) {
+  const { userProfile } = useContext(ProfileContext);
+  const isHome = userProfile === 'home';
+
   const [items, setItems] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [aCarregar, setACarregar] = useState(false);
@@ -799,7 +1103,9 @@ function InventarioScreen({ refreshKey }) {
       <View style={styles.kpiStripWrapper}>
         <View style={styles.kpiStrip}>
           <View style={styles.kpiCell}>
-            <Text style={styles.kpiLabel}>SKUs registrados</Text>
+            <Text style={styles.kpiLabel}>
+              {isHome ? 'Objetos guardados' : 'SKUs registrados'}
+            </Text>
             <View style={styles.kpiValueRow}>
               <Text style={styles.kpiValue}>{items.length}</Text>
               <Text style={styles.kpiUnit}>
@@ -811,7 +1117,9 @@ function InventarioScreen({ refreshKey }) {
           <View style={styles.kpiDivider} />
 
           <View style={styles.kpiCell}>
-            <Text style={styles.kpiLabel}>Volume em estoque</Text>
+            <Text style={styles.kpiLabel}>
+              {isHome ? 'Total de peças' : 'Volume em estoque'}
+            </Text>
             <View style={styles.kpiValueRow}>
               <Text style={[styles.kpiValue, styles.kpiValueAccent]}>
                 {totalUnidades}
@@ -997,7 +1305,7 @@ function InventarioScreen({ refreshKey }) {
               <Text style={styles.emptySubtext}>
                 {searchQuery.trim()
                   ? 'Tente outro termo de pesquisa ou limpe o filtro.'
-                  : 'Utilize a aba Scanner para bipar códigos ou cadastrar produtos.'}
+                  : 'Utilize a aba Scanner para registrar itens no seu armário.'}
               </Text>
             </View>
           )
@@ -1008,9 +1316,11 @@ function InventarioScreen({ refreshKey }) {
 }
 
 /* ==========================================================
-   NAVEGAÇÃO PRINCIPAL (Scanner | Espaços | Inventário)
+   APP PRINCIPAL (Onboarding Inicial + Tab.Navigator Multi-Perfil)
    ========================================================== */
 export default function App() {
+  const [userProfile, setUserProfile] = useState(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
   const [inventoryRefreshKey, setInventoryRefreshKey] = useState(0);
 
   const handleInventoryUpdated = useCallback(() => {
@@ -1018,77 +1328,149 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    initDatabase().catch((err) =>
-      console.error('Erro ao inicializar banco na abertura:', err)
-    );
+    let ativo = true;
+    async function inicializarApp() {
+      try {
+        const [, savedProfile] = await Promise.all([
+          initDatabase(),
+          AsyncStorage.getItem(STORAGE_KEY_PROFILE),
+        ]);
+
+        if (!ativo) return;
+        if (savedProfile === 'home' || savedProfile === 'business') {
+          setUserProfile(savedProfile);
+        }
+      } catch (error) {
+        console.error('Erro na inicialização do aplicativo:', error);
+      } finally {
+        if (ativo) {
+          setLoadingProfile(false);
+        }
+      }
+    }
+
+    inicializarApp();
+    return () => {
+      ativo = false;
+    };
   }, []);
 
+  const selectProfile = useCallback(async (perfil) => {
+    await AsyncStorage.setItem(STORAGE_KEY_PROFILE, perfil);
+    setUserProfile(perfil);
+  }, []);
+
+  const resetProfile = useCallback(async () => {
+    await AsyncStorage.removeItem(STORAGE_KEY_PROFILE);
+    setUserProfile(null);
+  }, []);
+
+  if (loadingProfile) {
+    return (
+      <View style={styles.loadingScreen}>
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color={TOKENS.text} />
+      </View>
+    );
+  }
+
+  // Se não houver perfil salvo no AsyncStorage, exibe a Tela de Onboarding
+  if (!userProfile) {
+    return <OnboardingScreen onSelectProfile={selectProfile} />;
+  }
+
+  const isHome = userProfile === 'home';
+
   return (
-    <NavigationContainer theme={TEMA}>
-      <StatusBar style="light" />
-      <Tab.Navigator
-        screenOptions={{
-          headerStyle: {
-            backgroundColor: TOKENS.ground,
-            elevation: 0,
-            shadowOpacity: 0,
-            borderBottomWidth: 1,
-            borderBottomColor: TOKENS.rule,
-          },
-          headerTintColor: TOKENS.text,
-          headerTitleStyle: {
-            fontSize: TOKENS.fsTitle,
-            fontWeight: '600',
-            color: TOKENS.text,
-          },
-          // Regra 'true-black-flat': item ativo marcado apenas por luminosidade (#b4b4b4 -> #ffffff)
-          tabBarActiveTintColor: TOKENS.text,
-          tabBarInactiveTintColor: TOKENS.muted,
-          tabBarLabelStyle: {
-            fontSize: TOKENS.fsSmall,
-            fontWeight: '500',
-          },
-          tabBarStyle: {
-            backgroundColor: TOKENS.ground,
-            borderTopWidth: 1,
-            borderTopColor: TOKENS.rule,
-            elevation: 0,
-          },
-        }}
-      >
-        <Tab.Screen
-          name="Scanner"
-          options={{
-            tabBarIcon: ({ color }) => (
-              <ScanBarcode size={18} color={color} strokeWidth={1.5} />
+    <ProfileContext.Provider
+      value={{ userProfile, selectProfile, resetProfile }}
+    >
+      <NavigationContainer theme={TEMA}>
+        <StatusBar style="light" />
+        <Tab.Navigator
+          screenOptions={{
+            headerStyle: {
+              backgroundColor: TOKENS.ground,
+              elevation: 0,
+              shadowOpacity: 0,
+              borderBottomWidth: 1,
+              borderBottomColor: TOKENS.rule,
+            },
+            headerTintColor: TOKENS.text,
+            headerTitleStyle: {
+              fontSize: TOKENS.fsTitle,
+              fontWeight: '600',
+              color: TOKENS.text,
+            },
+            headerRight: () => (
+              <TouchableOpacity
+                style={styles.headerProfileSwitch}
+                activeOpacity={0.78}
+                onPress={resetProfile}
+              >
+                {isHome ? (
+                  <Home size={13} color={TOKENS.muted} strokeWidth={1.5} />
+                ) : (
+                  <Building2 size={13} color={TOKENS.accent} strokeWidth={1.5} />
+                )}
+                <Text style={styles.headerProfileSwitchText}>
+                  {isHome ? 'Casa' : 'Negócio'}
+                </Text>
+                <RefreshCw size={11} color={TOKENS.faint} strokeWidth={1.5} />
+              </TouchableOpacity>
             ),
+            // Regra 'true-black-flat': item ativo marcado apenas por luminosidade (#b4b4b4 -> #ffffff)
+            tabBarActiveTintColor: TOKENS.text,
+            tabBarInactiveTintColor: TOKENS.muted,
+            tabBarLabelStyle: {
+              fontSize: TOKENS.fsSmall,
+              fontWeight: '500',
+            },
+            tabBarStyle: {
+              backgroundColor: TOKENS.ground,
+              borderTopWidth: 1,
+              borderTopColor: TOKENS.rule,
+              elevation: 0,
+            },
           }}
         >
-          {() => <ScannerScreen onInventoryUpdated={handleInventoryUpdated} />}
-        </Tab.Screen>
+          <Tab.Screen
+            name="Scanner"
+            options={{
+              tabBarIcon: ({ color }) =>
+                isHome ? (
+                  <Camera size={18} color={color} strokeWidth={1.5} />
+                ) : (
+                  <ScanBarcode size={18} color={color} strokeWidth={1.5} />
+                ),
+            }}
+          >
+            {() => <ScannerScreen onInventoryUpdated={handleInventoryUpdated} />}
+          </Tab.Screen>
 
-        <Tab.Screen
-          name="Espaços"
-          component={EspacosScreen}
-          options={{
-            tabBarIcon: ({ color }) => (
-              <Layers size={18} color={color} strokeWidth={1.5} />
-            ),
-          }}
-        />
+          <Tab.Screen
+            name="Espaços"
+            component={EspacosScreen}
+            options={{
+              tabBarIcon: ({ color }) => (
+                <Layers size={18} color={color} strokeWidth={1.5} />
+              ),
+            }}
+          />
 
-        <Tab.Screen
-          name="Inventário"
-          options={{
-            tabBarIcon: ({ color }) => (
-              <Package size={18} color={color} strokeWidth={1.5} />
-            ),
-          }}
-        >
-          {() => <InventarioScreen refreshKey={inventoryRefreshKey} />}
-        </Tab.Screen>
-      </Tab.Navigator>
-    </NavigationContainer>
+          <Tab.Screen
+            name="Inventário"
+            options={{
+              tabBarIcon: ({ color }) => (
+                <Package size={18} color={color} strokeWidth={1.5} />
+              ),
+            }}
+          >
+            {() => <InventarioScreen refreshKey={inventoryRefreshKey} />}
+          </Tab.Screen>
+        </Tab.Navigator>
+      </NavigationContainer>
+    </ProfileContext.Provider>
   );
 }
 
@@ -1096,6 +1478,113 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: TOKENS.ground,
+  },
+  loadingScreen: {
+    flex: 1,
+    backgroundColor: TOKENS.ground,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Tela de Onboarding ('true-black-flat')
+  onboardingScreen: {
+    flex: 1,
+    backgroundColor: TOKENS.ground,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  onboardingContent: {
+    width: '100%',
+    maxWidth: 460,
+    alignSelf: 'center',
+  },
+  onboardingBrand: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  onboardingTitle: {
+    color: TOKENS.text,
+    fontSize: 24,
+    fontWeight: '600',
+    lineHeight: 30,
+    marginBottom: 8,
+  },
+  onboardingSubtitle: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsBody,
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  onboardingCardsGroup: {
+    gap: TOKENS.gap,
+  },
+  onboardingCard: {
+    backgroundColor: TOKENS.surface,
+    borderRadius: TOKENS.radiusCard,
+    padding: TOKENS.pad,
+  },
+  onboardingCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  onboardingModePill: {
+    backgroundColor: TOKENS.pillNeutralBg,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: TOKENS.radiusControl,
+  },
+  onboardingModePillText: {
+    color: TOKENS.pillNeutralInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+  },
+  onboardingModePillAccent: {
+    backgroundColor: TOKENS.pillPositiveBg,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: TOKENS.radiusControl,
+  },
+  onboardingModePillAccentText: {
+    color: TOKENS.pillPositiveInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  onboardingCardTitle: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSection,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  onboardingCardDesc: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsBody,
+    lineHeight: 20,
+    marginBottom: 18,
+  },
+  onboardingActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  // Botão de troca rápida de perfil no cabeçalho
+  headerProfileSwitch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.surface,
+    paddingHorizontal: 12,
+    height: 30,
+    borderRadius: TOKENS.radiusControl,
+    marginRight: 14,
+  },
+  headerProfileSwitchText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
   },
 
   // Scanner e Câmera
@@ -1131,6 +1620,24 @@ const styles = StyleSheet.create({
   scannerSheet: {
     padding: TOKENS.pad,
     backgroundColor: TOKENS.surface,
+  },
+  homeCaptureSection: {
+    marginBottom: 4,
+  },
+  capturePhotoHeroButton: {
+    backgroundColor: TOKENS.text,
+    minHeight: 48,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: TOKENS.radiusControl,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: TOKENS.gap,
+  },
+  capturePhotoHeroButtonText: {
+    color: TOKENS.ground,
+    fontSize: TOKENS.fsSection,
+    fontWeight: '600',
   },
   scannedBarcodePill: {
     flexDirection: 'row',
@@ -1170,6 +1677,47 @@ const styles = StyleSheet.create({
   qtyInput: {
     textAlign: 'center',
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  batchControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: TOKENS.gap,
+    gap: 8,
+  },
+  batchLabel: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+  },
+  batchPillsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  batchPill: {
+    backgroundColor: TOKENS.raised,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderRadius: TOKENS.radiusControl,
+  },
+  batchPillText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  batchPillReset: {
+    backgroundColor: TOKENS.pillNeutralBg,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: TOKENS.radiusControl,
+  },
+  batchPillResetText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
     fontVariant: ['tabular-nums'],
   },
   label: {
@@ -1238,6 +1786,20 @@ const styles = StyleSheet.create({
   },
   primaryInvertedButtonText: {
     color: TOKENS.ground,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
+  },
+  secondarySaveButton: {
+    backgroundColor: TOKENS.raised,
+    minHeight: 42,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: TOKENS.radiusControl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondarySaveButtonText: {
+    color: TOKENS.text,
     fontSize: TOKENS.fsBody,
     fontWeight: '600',
   },
