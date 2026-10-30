@@ -7,8 +7,9 @@ const DATABASE_NAME = 'armario.db';
  * v1: tabela 'inventory'
  * v2: tabelas 'spaces' e 'items'
  * v3: coluna 'quantity INTEGER DEFAULT 1' na tabela 'items' (padrão B2B)
+ * v4: coluna 'barcode TEXT' na tabela 'items' (separação Código de Barras vs Nome + Soma Automática)
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 // Mantém uma única instância aberta do banco (padrão Singleton assíncrono)
 let dbPromise = null;
@@ -27,7 +28,7 @@ export async function getDatabase() {
 
 /**
  * Inicializa o banco 'armario.db'.
- * Inclui DROP TABLE IF EXISTS items para garantir a recriação limpa com a coluna quantity
+ * Inclui DROP TABLE IF EXISTS items para garantir a recriação limpa com a coluna barcode
  * nesta rodada de evolução do schema.
  * @returns {Promise<SQLite.SQLiteDatabase>}
  */
@@ -43,7 +44,6 @@ export async function initDatabase() {
       if (versaoAtual < SCHEMA_VERSION) {
         await db.execAsync(`
           DROP TABLE IF EXISTS items;
-          DROP TABLE IF EXISTS spaces;
           DROP TABLE IF EXISTS inventory;
 
           CREATE TABLE IF NOT EXISTS spaces (
@@ -58,11 +58,13 @@ export async function initDatabase() {
             name TEXT NOT NULL,
             space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
             quantity INTEGER DEFAULT 1,
+            barcode TEXT,
             created_at TEXT NOT NULL
           );
 
           CREATE INDEX IF NOT EXISTS idx_spaces_parent ON spaces(parent_id);
           CREATE INDEX IF NOT EXISTS idx_items_space ON items(space_id);
+          CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
 
           PRAGMA user_version = ${SCHEMA_VERSION};
         `);
@@ -138,28 +140,35 @@ export async function getSpaces() {
 }
 
 /* ==========================================================
-   ITENS (Com Controle de Quantidade B2B)
+   ITENS (Com Controle de Quantidade B2B e Código de Barras)
    ========================================================== */
 
 /**
- * Insere um novo item vinculado a um espaço e com a respectiva quantidade.
+ * Insere um novo item vinculado a um espaço, com quantidade e código de barras opcional.
  * @param {string} name Nome do item.
  * @param {number|null} space_id ID do espaço onde o item está guardado.
  * @param {number} quantity Quantidade do item (padrão: 1).
- * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, created_at: string }>}
+ * @param {string|null} barcode Código de barras associado ao item (opcional).
+ * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, created_at: string }>}
  */
-export async function insertItem(name, space_id = null, quantity = 1) {
+export async function insertItem(
+  name,
+  space_id = null,
+  quantity = 1,
+  barcode = null
+) {
   const nome = limparNome(name);
   const spaceId = space_id ?? null;
   const parsedQty = parseInt(quantity, 10);
   const finalQuantity = Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
+  const finalBarcode = barcode ? String(barcode).trim() || null : null;
 
   const db = await initDatabase();
   const createdAt = new Date().toISOString();
 
   const result = await db.runAsync(
-    'INSERT INTO items (name, space_id, quantity, created_at) VALUES (?, ?, ?, ?);',
-    [nome, spaceId, finalQuantity, createdAt]
+    'INSERT INTO items (name, space_id, quantity, barcode, created_at) VALUES (?, ?, ?, ?, ?);',
+    [nome, spaceId, finalQuantity, finalBarcode, createdAt]
   );
 
   return {
@@ -167,15 +176,48 @@ export async function insertItem(name, space_id = null, quantity = 1) {
     name: nome,
     space_id: spaceId,
     quantity: finalQuantity,
+    barcode: finalBarcode,
     created_at: createdAt,
   };
+}
+
+/**
+ * Busca um item cadastrado pelo código de barras (barcode).
+ * @param {string} barcode Código de barras escaneado.
+ * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, space_name: string|null, created_at: string } | null>}
+ */
+export async function getItemByBarcode(barcode) {
+  const codigo = String(barcode ?? '').trim();
+  if (!codigo) return null;
+
+  const db = await initDatabase();
+  const item = await db.getFirstAsync(
+    `
+    SELECT
+      items.id,
+      items.name,
+      items.space_id,
+      COALESCE(items.quantity, 1) AS quantity,
+      items.barcode,
+      spaces.name AS space_name,
+      items.created_at
+    FROM items
+    LEFT JOIN spaces ON items.space_id = spaces.id
+    WHERE items.barcode = ?
+    ORDER BY items.id DESC
+    LIMIT 1;
+    `,
+    [codigo]
+  );
+
+  return item ?? null;
 }
 
 /**
  * Lista os itens do inventário com LEFT JOIN na tabela spaces,
  * filtrando opcionalmente pelo termo de busca (searchQuery).
  * @param {string} searchQuery Termo de busca opcional para filtrar por nome.
- * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, space_name: string|null, created_at: string }>>}
+ * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, space_name: string|null, created_at: string }>>}
  */
 export async function getItems(searchQuery = '') {
   const db = await initDatabase();
@@ -189,6 +231,7 @@ export async function getItems(searchQuery = '') {
         items.name,
         items.space_id,
         COALESCE(items.quantity, 1) AS quantity,
+        items.barcode,
         spaces.name AS space_name,
         items.created_at
       FROM items
@@ -206,6 +249,7 @@ export async function getItems(searchQuery = '') {
       items.name,
       items.space_id,
       COALESCE(items.quantity, 1) AS quantity,
+      items.barcode,
       spaces.name AS space_name,
       items.created_at
     FROM items
@@ -244,6 +288,7 @@ export const initDB = initDatabase;
 export const inicializarBanco = initDatabase;
 export const addItem = insertItem;
 export const inserirItem = insertItem;
+export const buscarItemPorCodigo = getItemByBarcode;
 export const getAllItems = getItems;
 export const listarItens = getItems;
 export const atualizarQuantidadeItem = updateItemQuantity;
@@ -257,6 +302,7 @@ export default {
   addSpace,
   getSpaces,
   insertItem,
+  getItemByBarcode,
   getItems,
   updateItemQuantity,
   deleteItem,
@@ -264,6 +310,7 @@ export default {
   adicionarEspaco,
   listarEspacos,
   inserirItem,
+  buscarItemPorCodigo,
   listarItens,
   atualizarQuantidadeItem,
   removerItem,

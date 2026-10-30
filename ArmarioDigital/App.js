@@ -28,6 +28,7 @@ import {
   addSpace,
   getSpaces,
   insertItem,
+  getItemByBarcode,
   getItems,
   updateItemQuantity,
   deleteItem,
@@ -65,14 +66,16 @@ function formatarNomeEspaco(espaco) {
 }
 
 /* ==========================================================
-   ABA 1: SCANNER (Câmera + Leitor de Código de Barras + Formulário)
+   ABA 1: SCANNER (Câmera + Soma Automática por Barcode + Formulário)
    ========================================================== */
-function ScannerScreen() {
+function ScannerScreen({ onInventoryUpdated }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [nome, setNome] = useState('');
   const [quantidade, setQuantidade] = useState('1');
+  const [currentBarcode, setCurrentBarcode] = useState(null);
   const [lastScannedData, setLastScannedData] = useState('');
   const lastScannedRef = useRef('');
+  const processandoScanRef = useRef(false);
   const [espacos, setEspacos] = useState([]);
   const [espacoSelecionadoId, setEspacoSelecionadoId] = useState(null);
   const [aGuardar, setAGuardar] = useState(false);
@@ -104,16 +107,62 @@ function ScannerScreen() {
   );
 
   // Evento disparado pela CameraView ao detectar código de barras/QR Code
-  const handleBarcodeScanned = ({ data }) => {
+  const handleBarcodeScanned = async ({ data }) => {
     const valorLido = String(data ?? '').trim();
     if (!valorLido) return;
 
-    // Controle de Spam: só preenche o input e vibra se o código for diferente do último lido
-    if (valorLido !== lastScannedData && valorLido !== lastScannedRef.current) {
-      lastScannedRef.current = valorLido;
-      setLastScannedData(valorLido);
-      setNome(valorLido);
-      Vibration.vibrate(100);
+    // Controle de Spam: evita múltiplas leituras enquanto aponta para o mesmo código
+    if (
+      valorLido === lastScannedData ||
+      valorLido === lastScannedRef.current ||
+      processandoScanRef.current
+    ) {
+      return;
+    }
+
+    processandoScanRef.current = true;
+    lastScannedRef.current = valorLido;
+    setLastScannedData(valorLido);
+
+    try {
+      const itemExistente = await getItemByBarcode(valorLido);
+
+      if (itemExistente) {
+        // Item encontrado: dispensa o formulário, incrementa +1 e recarrega o inventário
+        const novaQtd = Number(itemExistente.quantity ?? 1) + 1;
+        await updateItemQuantity(itemExistente.id, novaQtd);
+
+        setCurrentBarcode(null);
+        setNome('');
+        setQuantidade('1');
+        Keyboard.dismiss();
+
+        Vibration.vibrate([0, 200, 200, 200]);
+        onInventoryUpdated?.();
+
+        Alert.alert(
+          '+1 adicionado ao estoque',
+          `"${itemExistente.name}" atualizado para ${novaQtd} un.`,
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                lastScannedRef.current = '';
+                setLastScannedData('');
+                processandoScanRef.current = false;
+              },
+            },
+          ]
+        );
+      } else {
+        // Item não encontrado: define currentBarcode, vibra 1 vez e aguarda preenchimento manual
+        setCurrentBarcode(valorLido);
+        Vibration.vibrate(100);
+        processandoScanRef.current = false;
+      }
+    } catch (error) {
+      console.error('Erro ao buscar item por código de barras:', error);
+      processandoScanRef.current = false;
     }
   };
 
@@ -128,7 +177,12 @@ function ScannerScreen() {
 
     setAGuardar(true);
     try {
-      await insertItem(nomeLimpo, espacoSelecionadoId, qtdFinal);
+      await insertItem(
+        nomeLimpo,
+        espacoSelecionadoId,
+        qtdFinal,
+        currentBarcode
+      );
       const espacoEscolhido = espacos.find((e) => e.id === espacoSelecionadoId);
       const destinoTexto = espacoEscolhido
         ? ` em "${formatarNomeEspaco(espacoEscolhido)}"`
@@ -136,9 +190,13 @@ function ScannerScreen() {
 
       setNome('');
       setQuantidade('1');
+      setCurrentBarcode(null);
       lastScannedRef.current = '';
       setLastScannedData('');
+      processandoScanRef.current = false;
       Keyboard.dismiss();
+      onInventoryUpdated?.();
+
       Alert.alert(
         'Item salvo',
         `${qtdFinal}x "${nomeLimpo}" guardado${destinoTexto} com sucesso.`
@@ -201,8 +259,27 @@ function ScannerScreen() {
       {/* Câmera no topo */}
       <View style={styles.cameraContainer}>{renderCamera()}</View>
 
-      {/* Formulário manual: Nome + Quantidade lado a lado e Seletor de Espaço */}
+      {/* Formulário manual: Código escaneado + Nome/Quantidade + Seletor de Espaço */}
       <View style={styles.form}>
+        {currentBarcode && (
+          <View style={styles.scannedBarcodeBanner}>
+            <Text style={styles.scannedBarcodeText} numberOfLines={1}>
+              Código escaneado: {currentBarcode}
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                setCurrentBarcode(null);
+                lastScannedRef.current = '';
+                setLastScannedData('');
+                processandoScanRef.current = false;
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.clearBarcodeText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <View style={styles.inputRow}>
           <View style={styles.nameColumn}>
             <Text style={styles.label}>Nome do objeto</Text>
@@ -538,7 +615,7 @@ function EspacosScreen() {
 /* ==========================================================
    ABA 3: INVENTÁRIO (Busca B2B + Optimistic UI no Giro de Estoque)
    ========================================================== */
-function InventarioScreen() {
+function InventarioScreen({ refreshKey }) {
   const [items, setItems] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [aCarregar, setACarregar] = useState(false);
@@ -555,12 +632,18 @@ function InventarioScreen() {
     }
   }, []);
 
-  // Recarrega ao focar na aba e também em tempo real conforme searchQuery muda
+  // Recarrega ao focar na aba, em tempo real ao buscar ou quando o Scanner soma/cadastra um item
   useFocusEffect(
     useCallback(() => {
       carregarItens(searchQuery);
-    }, [carregarItens, searchQuery])
+    }, [carregarItens, searchQuery, refreshKey])
   );
+
+  useEffect(() => {
+    if (refreshKey > 0) {
+      carregarItens(searchQuery);
+    }
+  }, [refreshKey, carregarItens, searchQuery]);
 
   // (➕) Optimistic UI Update: atualiza o estado local instantaneamente e persiste no SQLite em background
   const handleIncrementar = async (item) => {
@@ -832,6 +915,12 @@ const tabIcon = (emoji) => ({ focused }) => (
 );
 
 export default function App() {
+  const [inventoryRefreshKey, setInventoryRefreshKey] = useState(0);
+
+  const handleInventoryUpdated = useCallback(() => {
+    setInventoryRefreshKey((prev) => prev + 1);
+  }, []);
+
   useEffect(() => {
     initDatabase().catch((err) =>
       console.error('Erro ao inicializar banco na abertura:', err)
@@ -856,9 +945,10 @@ export default function App() {
       >
         <Tab.Screen
           name="Scanner"
-          component={ScannerScreen}
           options={{ tabBarIcon: tabIcon('📷') }}
-        />
+        >
+          {() => <ScannerScreen onInventoryUpdated={handleInventoryUpdated} />}
+        </Tab.Screen>
         <Tab.Screen
           name="Espaços"
           component={EspacosScreen}
@@ -866,9 +956,10 @@ export default function App() {
         />
         <Tab.Screen
           name="Inventário"
-          component={InventarioScreen}
           options={{ tabBarIcon: tabIcon('🗄️') }}
-        />
+        >
+          {() => <InventarioScreen refreshKey={inventoryRefreshKey} />}
+        </Tab.Screen>
       </Tab.Navigator>
     </NavigationContainer>
   );
@@ -927,6 +1018,30 @@ const styles = StyleSheet.create({
     backgroundColor: CORES.fundo,
     borderTopWidth: 1,
     borderTopColor: CORES.borda,
+  },
+  scannedBarcodeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(0, 255, 204, 0.14)',
+    borderWidth: 1,
+    borderColor: CORES.primaria,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  scannedBarcodeText: {
+    color: CORES.primaria,
+    fontSize: 13,
+    fontWeight: '700',
+    flex: 1,
+    marginRight: 8,
+  },
+  clearBarcodeText: {
+    color: CORES.textoSuave,
+    fontSize: 14,
+    fontWeight: '700',
   },
   inputRow: {
     flexDirection: 'row',
