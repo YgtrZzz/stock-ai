@@ -38,19 +38,27 @@ Na primeira abertura do aplicativo, um **Onboarding Inicial** pergunta ao usuár
   2. **Para meu Negócio (Controle de estoque)** → Grava `'business'`.
 * Botão rápido no cabeçalho superior permitindo alternar entre os perfis **Casa** e **Negócio** a qualquer momento.
 
-### 📷 Adaptação Dinâmica da Aba Scanner (`'home'` vs. `'business'`)
+### 📷 Captura Fotográfica Nativa e Adaptação Dinâmica do Scanner (`'home'` vs. `'business'`)
+* **Captura Nativa via `CameraView` (`takePictureAsync`):**
+  * Utilização de `useRef` (`cameraRef`) conectada à `CameraView` com botão de captura estilizado em `true-black-flat` e ícone vetorial `Camera` (Lucide, zero emojis).
+  * Armazena o URI da fotografia no estado `capturedImage` e exibe uma **miniatura temporária de pré-visualização (`<Image>`)** diretamente no formulário antes de persistir o registo no SQLite (`image_uri`).
 * **No Perfil `'home'` (Residencial):**
   * Oculta o painel de leitura de código de barras.
-  * Destaca um grande botão primário invertido **"Tirar Foto do Item"**, acionando `takePictureAsync()` na `CameraView` com feedback tátil e direcionando o foco para nomear o objeto e escolher o cômodo.
+  * Destaca um grande botão primário invertido **"Tirar Foto do Item"**, acionando `takePictureAsync()` com feedback tátil e direcionando o foco para nomear o objeto e escolher o cômodo.
 * **No Perfil `'business'` (B2B):**
-  * Ativa o leitor óptico contínuo de códigos comerciais (`qr`, `ean13`, `ean8`, `upc_a`, `upc_e`, `code128`) com trava anti-spam (`lastScannedData`).
+  * Ativa o leitor óptico contínuo de códigos comerciais (`qr`, `ean13`, `ean8`, `upc_a`, `upc_e`, `code128`) com trava anti-spam (`lastScannedData`), além de botão auxiliar rápido para captura opcional de foto do SKU.
   * **Soma Automática de SKUs Conhecidos:** Ao bipar um código já existente no banco (`getItemByBarcode`), dispensa o formulário manual, incrementa `+1` no estoque (`updateItemQuantity`), emite vibração dupla (`[0, 200, 200, 200]`) e atualiza o inventário imediatamente.
   * **Controle Rápido de Lote:** Exibe pílulas de incremento rápido (`+1`, `+5`, `+10`, `+25`, `1 un.`) para entrada ágil de caixas fechadas.
 
-### 🗃️ Banco de Dados Relacional (`armario.db` — Schema v4)
+### 🖼️ Motor de Renderização Dinâmica e Adaptativa no Inventário (`<Image>`)
+* O motor de renderização dos cards na `FlatList` adapta automaticamente a hierarquia visual da fotografia (`item.image_uri`) conforme o perfil ativo no `ProfileContext`:
+  * **Modo Residencial (`userProfile === 'home'`):** Dá grande destaque visual à fotografia do objeto, renderizando um banner superior de ponta a ponta (*full-bleed cover*) no topo do card.
+  * **Modo Comercial (`userProfile === 'business'`):** Renderiza a imagem apenas como uma pequena miniatura circular (*avatar* `44x44`) à esquerda do título do produto, preservando o foco operacional nos botões de giro de estoque e no código de barras.
+
+### 🗃️ Banco de Dados Relacional (`armario.db` — Schema v5)
 Modelagem SQLite estruturada com integridade referencial ativa (`PRAGMA foreign_keys = ON`) e versionamento via `PRAGMA user_version`:
 * **Tabela `spaces`:** Armazena os cômodos ou setores físicos com auto-relacionamento (`id`, `name`, `parent_id`, `created_at`).
-* **Tabela `items`:** Armazena os itens com controle de volume e código comercial (`id`, `name`, `space_id`, `quantity`, `barcode`, `created_at`), conectada à tabela `spaces` via **Foreign Key (`space_id`)**.
+* **Tabela `items`:** Armazena os itens com controle de volume, código comercial e fotografia nativa (`id`, `name`, `space_id`, `quantity`, `barcode`, `image_uri`, `created_at`), conectada à tabela `spaces` via **Foreign Key (`space_id`)** e consultada via `LEFT JOIN`.
 
 ### 🏢 Hierarquia de Armazenagem (Drill-down Infinito)
 * Navegação em árvore de profundidade arbitrária utilizando a chave recursiva `parent_id` na tabela `spaces` (ex: `Quarto Casal > Closet > Gaveta 2` no modo Casa, ou `Estoque Central > Prateleira A > Caixa 04` no modo Negócio).

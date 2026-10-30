@@ -8,8 +8,9 @@ const DATABASE_NAME = 'armario.db';
  * v2: tabelas 'spaces' e 'items'
  * v3: coluna 'quantity INTEGER DEFAULT 1' na tabela 'items' (padrão B2B)
  * v4: coluna 'barcode TEXT' na tabela 'items' (separação Código de Barras vs Nome + Soma Automática)
+ * v5: coluna 'image_uri TEXT' na tabela 'items' (captura fotográfica nativa Multi-Perfil)
  */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 // Mantém uma única instância aberta do banco (padrão Singleton assíncrono)
 let dbPromise = null;
@@ -28,7 +29,7 @@ export async function getDatabase() {
 
 /**
  * Inicializa o banco 'armario.db'.
- * Inclui DROP TABLE IF EXISTS items para garantir a recriação limpa com a coluna barcode
+ * Inclui DROP TABLE IF EXISTS items para garantir a recriação limpa com a coluna image_uri
  * nesta rodada de evolução do schema.
  * @returns {Promise<SQLite.SQLiteDatabase>}
  */
@@ -59,6 +60,7 @@ export async function initDatabase() {
             space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
             quantity INTEGER DEFAULT 1,
             barcode TEXT,
+            image_uri TEXT,
             created_at TEXT NOT NULL
           );
 
@@ -140,35 +142,38 @@ export async function getSpaces() {
 }
 
 /* ==========================================================
-   ITENS (Com Controle de Quantidade B2B e Código de Barras)
+   ITENS (Com Quantidade B2B, Código de Barras e Foto Nativa)
    ========================================================== */
 
 /**
- * Insere um novo item vinculado a um espaço, com quantidade e código de barras opcional.
+ * Insere um novo item vinculado a um espaço, com quantidade, código de barras e URI da foto.
  * @param {string} name Nome do item.
  * @param {number|null} space_id ID do espaço onde o item está guardado.
  * @param {number} quantity Quantidade do item (padrão: 1).
  * @param {string|null} barcode Código de barras associado ao item (opcional).
- * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, created_at: string }>}
+ * @param {string|null} image_uri URI local da fotografia capturada (opcional).
+ * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, image_uri: string|null, created_at: string }>}
  */
 export async function insertItem(
   name,
   space_id = null,
   quantity = 1,
-  barcode = null
+  barcode = null,
+  image_uri = null
 ) {
   const nome = limparNome(name);
   const spaceId = space_id ?? null;
   const parsedQty = parseInt(quantity, 10);
   const finalQuantity = Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
   const finalBarcode = barcode ? String(barcode).trim() || null : null;
+  const finalImageUri = image_uri ? String(image_uri).trim() || null : null;
 
   const db = await initDatabase();
   const createdAt = new Date().toISOString();
 
   const result = await db.runAsync(
-    'INSERT INTO items (name, space_id, quantity, barcode, created_at) VALUES (?, ?, ?, ?, ?);',
-    [nome, spaceId, finalQuantity, finalBarcode, createdAt]
+    'INSERT INTO items (name, space_id, quantity, barcode, image_uri, created_at) VALUES (?, ?, ?, ?, ?, ?);',
+    [nome, spaceId, finalQuantity, finalBarcode, finalImageUri, createdAt]
   );
 
   return {
@@ -177,6 +182,7 @@ export async function insertItem(
     space_id: spaceId,
     quantity: finalQuantity,
     barcode: finalBarcode,
+    image_uri: finalImageUri,
     created_at: createdAt,
   };
 }
@@ -184,7 +190,7 @@ export async function insertItem(
 /**
  * Busca um item cadastrado pelo código de barras (barcode).
  * @param {string} barcode Código de barras escaneado.
- * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, space_name: string|null, created_at: string } | null>}
+ * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, image_uri: string|null, space_name: string|null, created_at: string } | null>}
  */
 export async function getItemByBarcode(barcode) {
   const codigo = String(barcode ?? '').trim();
@@ -199,6 +205,7 @@ export async function getItemByBarcode(barcode) {
       items.space_id,
       COALESCE(items.quantity, 1) AS quantity,
       items.barcode,
+      items.image_uri,
       spaces.name AS space_name,
       items.created_at
     FROM items
@@ -217,7 +224,7 @@ export async function getItemByBarcode(barcode) {
  * Lista os itens do inventário com LEFT JOIN na tabela spaces,
  * filtrando opcionalmente pelo termo de busca (searchQuery).
  * @param {string} searchQuery Termo de busca opcional para filtrar por nome.
- * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, space_name: string|null, created_at: string }>>}
+ * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, image_uri: string|null, space_name: string|null, created_at: string }>>}
  */
 export async function getItems(searchQuery = '') {
   const db = await initDatabase();
@@ -232,6 +239,7 @@ export async function getItems(searchQuery = '') {
         items.space_id,
         COALESCE(items.quantity, 1) AS quantity,
         items.barcode,
+        items.image_uri,
         spaces.name AS space_name,
         items.created_at
       FROM items
@@ -250,6 +258,7 @@ export async function getItems(searchQuery = '') {
       items.space_id,
       COALESCE(items.quantity, 1) AS quantity,
       items.barcode,
+      items.image_uri,
       spaces.name AS space_name,
       items.created_at
     FROM items

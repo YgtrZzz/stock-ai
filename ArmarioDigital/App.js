@@ -20,6 +20,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -255,7 +256,7 @@ function ScannerScreen({ onInventoryUpdated }) {
   const [nome, setNome] = useState('');
   const [quantidade, setQuantidade] = useState('1');
   const [currentBarcode, setCurrentBarcode] = useState(null);
-  const [fotoCapturadaUri, setFotoCapturadaUri] = useState(null);
+  const [capturedImage, setCapturedImage] = useState(null);
   const [aCapturarFoto, setACapturarFoto] = useState(false);
   const [lastScannedData, setLastScannedData] = useState('');
   const lastScannedRef = useRef('');
@@ -350,27 +351,26 @@ function ScannerScreen({ onInventoryUpdated }) {
     }
   };
 
-  // Captura de foto do item (Destaque do perfil 'home')
+  // Captura de fotografia nativa na CameraView via takePictureAsync()
   const handleTirarFotoItem = async () => {
-    if (aCapturarFoto) return;
+    if (aCapturarFoto || !cameraRef.current?.takePictureAsync) return;
 
     setACapturarFoto(true);
     try {
-      if (cameraRef.current?.takePictureAsync) {
-        const foto = await cameraRef.current.takePictureAsync({
-          quality: 0.65,
-        });
-        setFotoCapturadaUri(foto?.uri || 'capturada');
-      } else {
-        setFotoCapturadaUri('capturada');
+      const foto = await cameraRef.current.takePictureAsync({
+        quality: 0.65,
+      });
+      if (foto?.uri) {
+        setCapturedImage(foto.uri);
+        Vibration.vibrate(80);
+        inputNomeRef.current?.focus();
       }
-      Vibration.vibrate(80);
-      inputNomeRef.current?.focus();
     } catch (error) {
       console.error('Erro ao capturar foto do item:', error);
-      setFotoCapturadaUri('capturada');
-      Vibration.vibrate(80);
-      inputNomeRef.current?.focus();
+      Alert.alert(
+        'Erro na câmara',
+        'Não foi possível capturar a fotografia. Tente novamente.'
+      );
     } finally {
       setACapturarFoto(false);
     }
@@ -398,7 +398,8 @@ function ScannerScreen({ onInventoryUpdated }) {
         nomeLimpo,
         espacoSelecionadoId,
         qtdFinal,
-        isBusiness ? currentBarcode : null
+        isBusiness ? currentBarcode : null,
+        capturedImage
       );
       const espacoEscolhido = espacos.find((e) => e.id === espacoSelecionadoId);
       const destinoTexto = espacoEscolhido
@@ -408,7 +409,7 @@ function ScannerScreen({ onInventoryUpdated }) {
       setNome('');
       setQuantidade('1');
       setCurrentBarcode(null);
-      setFotoCapturadaUri(null);
+      setCapturedImage(null);
       lastScannedRef.current = '';
       setLastScannedData('');
       processandoScanRef.current = false;
@@ -517,57 +518,95 @@ function ScannerScreen({ onInventoryUpdated }) {
                 </View>
               )}
             </TouchableOpacity>
+          </View>
+        )}
 
-            {fotoCapturadaUri && (
-              <View style={styles.scannedBarcodePill}>
+        {/* PERFIL BUSINESS: Banner de Código de Barras Escaneado + Captura Opcional de Avatar */}
+        {isBusiness && (
+          <View style={styles.businessTopCaptureBar}>
+            {currentBarcode ? (
+              <View style={styles.scannedBarcodePillFlex}>
                 <View style={styles.scannedBarcodeLeft}>
-                  <Check
-                    size={15}
+                  <Barcode
+                    size={16}
                     color={TOKENS.pillPositiveInk}
-                    strokeWidth={1.75}
+                    strokeWidth={1.5}
                   />
                   <Text style={styles.scannedBarcodeText} numberOfLines={1}>
-                    Foto capturada · Informe o nome abaixo para salvar
+                    Código escaneado: {currentBarcode}
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => setFotoCapturadaUri(null)}
+                  onPress={() => {
+                    setCurrentBarcode(null);
+                    lastScannedRef.current = '';
+                    setLastScannedData('');
+                    processandoScanRef.current = false;
+                  }}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <X
-                    size={15}
+                    size={16}
                     color={TOKENS.pillPositiveInk}
                     strokeWidth={1.5}
                   />
                 </TouchableOpacity>
               </View>
-            )}
+            ) : null}
+
+            <TouchableOpacity
+              style={[
+                styles.businessCameraPill,
+                (!permission?.granted || aCapturarFoto) &&
+                  styles.controlDisabled,
+              ]}
+              activeOpacity={0.82}
+              onPress={handleTirarFotoItem}
+              disabled={!permission?.granted || aCapturarFoto}
+            >
+              {aCapturarFoto ? (
+                <ActivityIndicator size="small" color={TOKENS.text} />
+              ) : (
+                <View style={styles.buttonContentRow}>
+                  <Camera size={15} color={TOKENS.text} strokeWidth={1.5} />
+                  <Text style={styles.businessCameraPillText}>
+                    {capturedImage ? 'Nova foto' : 'Tirar foto'}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
           </View>
         )}
 
-        {/* PERFIL BUSINESS: Banner de Código de Barras Escaneado */}
-        {isBusiness && currentBarcode && (
-          <View style={styles.scannedBarcodePill}>
-            <View style={styles.scannedBarcodeLeft}>
-              <Barcode
-                size={16}
-                color={TOKENS.pillPositiveInk}
-                strokeWidth={1.5}
-              />
-              <Text style={styles.scannedBarcodeText} numberOfLines={1}>
-                Código escaneado: {currentBarcode}
+        {/* Miniatura temporária no formulário para confirmar a captura (capturedImage) */}
+        {capturedImage && (
+          <View style={styles.capturedPreviewContainer}>
+            <Image
+              source={{ uri: capturedImage }}
+              style={styles.capturedPreviewThumb}
+              resizeMode="cover"
+            />
+            <View style={styles.capturedPreviewTextCol}>
+              <View style={styles.capturedPreviewStatusRow}>
+                <Check
+                  size={14}
+                  color={TOKENS.pillPositiveInk}
+                  strokeWidth={1.75}
+                />
+                <Text style={styles.capturedPreviewTitle} numberOfLines={1}>
+                  Fotografia capturada
+                </Text>
+              </View>
+              <Text style={styles.capturedPreviewSubtitle} numberOfLines={1}>
+                Miniatura pronta para ser guardada com o item
               </Text>
             </View>
             <TouchableOpacity
-              onPress={() => {
-                setCurrentBarcode(null);
-                lastScannedRef.current = '';
-                setLastScannedData('');
-                processandoScanRef.current = false;
-              }}
+              style={styles.capturedPreviewRemoveBtn}
+              onPress={() => setCapturedImage(null)}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <X size={16} color={TOKENS.pillPositiveInk} strokeWidth={1.5} />
+              <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
             </TouchableOpacity>
           </View>
         )}
@@ -1174,117 +1213,141 @@ function InventarioScreen({ refreshKey }) {
 
           return (
             <View style={styles.inventoryCard}>
-              {/* Linha Superior: Identificação + Metadados + Pílula Semântica de Quantidade */}
-              <View style={styles.inventoryCardTopRow}>
-                <View style={styles.itemInfo}>
-                  <Text style={styles.cardTitleText} numberOfLines={1}>
-                    {item.name}
-                  </Text>
+              {/* PERFIL HOME: Imagem de destaque de ponta a ponta no topo do card */}
+              {isHome && item.image_uri ? (
+                <Image
+                  source={{ uri: item.image_uri }}
+                  style={styles.homeCardCoverImage}
+                  resizeMode="cover"
+                />
+              ) : null}
 
-                  <View style={styles.metaPillsRow}>
-                    <View style={styles.locationPill}>
-                      <MapPin
-                        size={12}
-                        color={TOKENS.muted}
-                        strokeWidth={1.5}
-                      />
-                      <Text style={styles.locationPillText} numberOfLines={1}>
-                        {nomeLocal}
-                      </Text>
-                    </View>
+              <View style={styles.inventoryCardBody}>
+                {/* Linha Superior: Avatar B2B (quando aplicável) + Identificação + Metadados + Pílula de Quantidade */}
+                <View style={styles.inventoryCardTopRow}>
+                  {/* PERFIL BUSINESS: Miniatura circular (avatar) à esquerda do título */}
+                  {!isHome && item.image_uri ? (
+                    <Image
+                      source={{ uri: item.image_uri }}
+                      style={styles.businessAvatarImage}
+                      resizeMode="cover"
+                    />
+                  ) : null}
 
-                    {item.barcode ? (
-                      <View style={styles.barcodeMetaPill}>
-                        <Barcode
+                  <View style={styles.itemInfo}>
+                    <Text style={styles.cardTitleText} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+
+                    <View style={styles.metaPillsRow}>
+                      <View style={styles.locationPill}>
+                        <MapPin
                           size={12}
-                          color={TOKENS.faint}
+                          color={TOKENS.muted}
                           strokeWidth={1.5}
                         />
-                        <Text
-                          style={styles.barcodeMetaPillText}
-                          numberOfLines={1}
-                        >
-                          {item.barcode}
+                        <Text style={styles.locationPillText} numberOfLines={1}>
+                          {nomeLocal}
                         </Text>
                       </View>
-                    ) : null}
+
+                      {item.barcode ? (
+                        <View style={styles.barcodeMetaPill}>
+                          <Barcode
+                            size={12}
+                            color={TOKENS.faint}
+                            strokeWidth={1.5}
+                          />
+                          <Text
+                            style={styles.barcodeMetaPillText}
+                            numberOfLines={1}
+                          >
+                            {item.barcode}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <Text style={styles.cardMetaText}>
+                      #{item.id} · {formatarData(item.created_at)}
+                    </Text>
                   </View>
 
-                  <Text style={styles.cardMetaText}>
-                    #{item.id} · {formatarData(item.created_at)}
-                  </Text>
-                </View>
-
-                {/* Marca de Dados: Pílula de Quantidade (--pill-positive ou --pill-warning quando zero) */}
-                <View
-                  style={[
-                    styles.quantityPill,
-                    semEstoque
-                      ? styles.quantityPillWarning
-                      : styles.quantityPillPositive,
-                  ]}
-                >
-                  <Text
+                  {/* Marca de Dados: Pílula de Quantidade (--pill-positive ou --pill-warning quando zero) */}
+                  <View
                     style={[
-                      styles.quantityPillValue,
+                      styles.quantityPill,
                       semEstoque
-                        ? styles.quantityPillValueWarning
-                        : styles.quantityPillValuePositive,
+                        ? styles.quantityPillWarning
+                        : styles.quantityPillPositive,
                     ]}
                   >
-                    {qtd}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.quantityPillUnit,
-                      semEstoque
-                        ? styles.quantityPillValueWarning
-                        : styles.quantityPillValuePositive,
-                    ]}
-                  >
-                    un.
-                  </Text>
+                    <Text
+                      style={[
+                        styles.quantityPillValue,
+                        semEstoque
+                          ? styles.quantityPillValueWarning
+                          : styles.quantityPillValuePositive,
+                      ]}
+                    >
+                      {qtd}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.quantityPillUnit,
+                        semEstoque
+                          ? styles.quantityPillValueWarning
+                          : styles.quantityPillValuePositive,
+                      ]}
+                    >
+                      un.
+                    </Text>
+                  </View>
                 </View>
-              </View>
 
-              {/* Painel de Ações Rápidas (Giro de Estoque com ícones vetoriais Lucide) */}
-              <View style={styles.actionPanel}>
-                <View style={styles.qtyActionsGroup}>
+                {/* Painel de Ações Rápidas (Giro de Estoque com ícones vetoriais Lucide) */}
+                <View style={styles.actionPanel}>
+                  <View style={styles.qtyActionsGroup}>
+                    <TouchableOpacity
+                      style={[
+                        styles.actionPillButton,
+                        qtd <= 0 && styles.controlDisabled,
+                      ]}
+                      activeOpacity={0.75}
+                      onPress={() => handleDecrementar(item)}
+                      disabled={qtd <= 0}
+                    >
+                      <Minus size={15} color={TOKENS.text} strokeWidth={1.5} />
+                      <Text style={styles.actionPillText}>Diminuir</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.actionPillButtonPrimary}
+                      activeOpacity={0.8}
+                      onPress={() => handleIncrementar(item)}
+                    >
+                      <Plus
+                        size={15}
+                        color={TOKENS.ground}
+                        strokeWidth={1.75}
+                      />
+                      <Text style={styles.actionPillTextPrimary}>Aumentar</Text>
+                    </TouchableOpacity>
+                  </View>
+
                   <TouchableOpacity
-                    style={[
-                      styles.actionPillButton,
-                      qtd <= 0 && styles.controlDisabled,
-                    ]}
+                    style={styles.actionPillButtonDelete}
                     activeOpacity={0.75}
-                    onPress={() => handleDecrementar(item)}
-                    disabled={qtd <= 0}
+                    onPress={() => handleExcluir(item)}
                   >
-                    <Minus size={15} color={TOKENS.text} strokeWidth={1.5} />
-                    <Text style={styles.actionPillText}>Diminuir</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.actionPillButtonPrimary}
-                    activeOpacity={0.8}
-                    onPress={() => handleIncrementar(item)}
-                  >
-                    <Plus size={15} color={TOKENS.ground} strokeWidth={1.75} />
-                    <Text style={styles.actionPillTextPrimary}>Aumentar</Text>
+                    <Trash2
+                      size={15}
+                      color={TOKENS.pillNegativeInk}
+                      strokeWidth={1.5}
+                    />
+                    <Text style={styles.actionPillTextDelete}>Excluir</Text>
                   </TouchableOpacity>
                 </View>
-
-                <TouchableOpacity
-                  style={styles.actionPillButtonDelete}
-                  activeOpacity={0.75}
-                  onPress={() => handleExcluir(item)}
-                >
-                  <Trash2
-                    size={15}
-                    color={TOKENS.pillNegativeInk}
-                    strokeWidth={1.5}
-                  />
-                  <Text style={styles.actionPillTextDelete}>Excluir</Text>
-                </TouchableOpacity>
               </View>
             </View>
           );
@@ -1638,6 +1701,72 @@ const styles = StyleSheet.create({
     color: TOKENS.ground,
     fontSize: TOKENS.fsSection,
     fontWeight: '600',
+  },
+  businessTopCaptureBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginBottom: TOKENS.gap,
+  },
+  scannedBarcodePillFlex: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: TOKENS.pillPositiveBg,
+    borderRadius: TOKENS.radiusControl,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  businessCameraPill: {
+    backgroundColor: TOKENS.raised,
+    height: TOKENS.controlHeight,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  businessCameraPillText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  capturedPreviewContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: TOKENS.raised,
+    borderRadius: 14,
+    padding: 10,
+    marginBottom: TOKENS.gap,
+    gap: 12,
+  },
+  capturedPreviewThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: TOKENS.surface,
+  },
+  capturedPreviewTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  capturedPreviewStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  capturedPreviewTitle: {
+    color: TOKENS.pillPositiveInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  capturedPreviewSubtitle: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+  },
+  capturedPreviewRemoveBtn: {
+    padding: 4,
   },
   scannedBarcodePill: {
     flexDirection: 'row',
@@ -2010,9 +2139,23 @@ const styles = StyleSheet.create({
   },
   inventoryCard: {
     backgroundColor: TOKENS.surface,
-    padding: TOKENS.pad,
     borderRadius: TOKENS.radiusCard,
     marginBottom: TOKENS.gap,
+    overflow: 'hidden',
+  },
+  inventoryCardBody: {
+    padding: TOKENS.pad,
+  },
+  homeCardCoverImage: {
+    width: '100%',
+    height: 176,
+    backgroundColor: TOKENS.raised,
+  },
+  businessAvatarImage: {
+    width: 44,
+    height: 44,
+    borderRadius: TOKENS.radiusControl,
+    backgroundColor: TOKENS.raised,
   },
   inventoryCardTopRow: {
     flexDirection: 'row',
