@@ -66,6 +66,7 @@ import {
   updateItemImage,
   getItemByBarcode,
   getItems,
+  bulkUpsertItemsFromCatalog,
   updateItemQuantity,
   deleteItem,
 } from './database';
@@ -73,6 +74,7 @@ import { useTensorflowModel } from 'react-native-fast-tflite';
 import ExportButton from './components/ExportButton';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
 import { generateAndShareInventoryCSV } from './utils/exportCsv';
+import { importInventoryFromCsvText } from './utils/importCsv';
 import {
   resolveYoloEngineStatus,
   runYoloInference,
@@ -1370,6 +1372,10 @@ function InventarioScreen({ refreshKey }) {
   const [items, setItems] = useState([]);
   const [spaces, setSpaces] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [stockFilter, setStockFilter] = useState('all');
+  const [showCsvImportPanel, setShowCsvImportPanel] = useState(false);
+  const [csvImportText, setCsvImportText] = useState('');
+  const [aImportarCsv, setAImportarCsv] = useState(false);
   const [aCarregar, setACarregar] = useState(false);
   const [aExportar, setAExportar] = useState(false);
   const [failedImageIds, setFailedImageIds] = useState({});
@@ -1411,6 +1417,44 @@ function InventarioScreen({ refreshKey }) {
       setAExportar(false);
     }
   }, [aExportar, items, spaces]);
+
+  const handleImportarLoteCsv = useCallback(async () => {
+    const texto = csvImportText.trim();
+    if (!texto || aImportarCsv) return;
+
+    setAImportarCsv(true);
+    try {
+      const stats = await importInventoryFromCsvText(
+        texto,
+        bulkUpsertItemsFromCatalog
+      );
+      if (stats.totalProcessed === 0) {
+        Alert.alert(
+          'Nenhuma linha válida',
+          'Informe linhas no formato: Código de Barras;Nome do Produto;Quantidade;Espaço'
+        );
+        return;
+      }
+
+      setCsvImportText('');
+      setShowCsvImportPanel(false);
+      Keyboard.dismiss();
+      await carregarItens(searchQuery);
+
+      Alert.alert(
+        'Lote CSV processado',
+        `${stats.totalProcessed} registro(s) processado(s): ${stats.insertedCount} novo(s), ${stats.updatedCount} atualizado(s) e ${stats.createdSpacesCount} espaço(s) criado(s).`
+      );
+    } catch (error) {
+      console.error('Erro ao importar lote CSV:', error);
+      Alert.alert(
+        'Erro na importação',
+        'Não foi possível processar o lote CSV informado.'
+      );
+    } finally {
+      setAImportarCsv(false);
+    }
+  }, [aImportarCsv, carregarItens, csvImportText, searchQuery]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1514,6 +1558,23 @@ function InventarioScreen({ refreshKey }) {
     return acc + (Number.isFinite(qtd) ? qtd : 1);
   }, 0);
 
+  const lowStockCount = items.reduce((acc, item) => {
+    const qtd = Number(item.quantity ?? 1);
+    return qtd > 0 && qtd <= 3 ? acc + 1 : acc;
+  }, 0);
+
+  const outOfStockCount = items.reduce((acc, item) => {
+    const qtd = Number(item.quantity ?? 1);
+    return qtd === 0 ? acc + 1 : acc;
+  }, 0);
+
+  const displayedItems = items.filter((item) => {
+    const qtd = Number(item.quantity ?? 1);
+    if (stockFilter === 'low') return qtd > 0 && qtd <= 3;
+    if (stockFilter === 'out') return qtd === 0;
+    return true;
+  });
+
   return (
     <View style={styles.screen}>
       {/* KPI Strip (Padrão 'true-black-flat': container único dividido por hairline 1px #161616) */}
@@ -1557,7 +1618,11 @@ function InventarioScreen({ refreshKey }) {
             style={styles.searchInput}
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="Pesquisar item pelo nome..."
+            placeholder={
+              isHome
+                ? 'Pesquisar item ou cômodo...'
+                : 'Pesquisar por produto, código EAN ou local...'
+            }
             placeholderTextColor={TOKENS.faint}
             returnKeyType="search"
             autoCapitalize="none"
@@ -1573,28 +1638,171 @@ function InventarioScreen({ refreshKey }) {
             </TouchableOpacity>
           )}
         </View>
+
+        {/* Pílulas de Auditoria Rápida de Estoque (Todos / Baixo Estoque / Ruptura) */}
+        <View style={styles.stockFilterRow}>
+          <TouchableOpacity
+            style={[
+              styles.stockFilterPill,
+              stockFilter === 'all' && styles.stockFilterPillActive,
+            ]}
+            activeOpacity={0.8}
+            onPress={() => setStockFilter('all')}
+          >
+            <Text
+              style={[
+                styles.stockFilterPillText,
+                stockFilter === 'all' && styles.stockFilterPillTextActive,
+              ]}
+            >
+              Todos ({items.length})
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.stockFilterPill,
+              stockFilter === 'low' && styles.stockFilterPillWarningActive,
+            ]}
+            activeOpacity={0.8}
+            onPress={() => setStockFilter('low')}
+          >
+            <Text
+              style={[
+                styles.stockFilterPillText,
+                stockFilter === 'low' && styles.stockFilterPillWarningText,
+              ]}
+            >
+              Baixo ≤ 3 ({lowStockCount})
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.stockFilterPill,
+              stockFilter === 'out' && styles.stockFilterPillWarningActive,
+            ]}
+            activeOpacity={0.8}
+            onPress={() => setStockFilter('out')}
+          >
+            <Text
+              style={[
+                styles.stockFilterPillText,
+                stockFilter === 'out' && styles.stockFilterPillWarningText,
+              ]}
+            >
+              Ruptura ({outOfStockCount})
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
-        data={items}
+        data={displayedItems}
         keyExtractor={(item) => String(item.id)}
         refreshing={aCarregar}
         onRefresh={() => carregarItens(searchQuery)}
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
           !isHome ? (
-            <ExportButton
-              items={items}
-              spaces={spaces}
-              itemCount={items.length}
-              totalUnits={totalUnidades}
-              loading={aExportar}
-              onPress={handleExportarRelatorioCsv}
-            />
+            <View>
+              <ExportButton
+                items={items}
+                spaces={spaces}
+                itemCount={items.length}
+                totalUnits={totalUnidades}
+                loading={aExportar}
+                onPress={handleExportarRelatorioCsv}
+              />
+
+              {/* Painel de Importação em Lote CSV (Interoperabilidade B2B / ERP) */}
+              <View style={styles.csvImportCard}>
+                <View style={styles.csvImportHeaderRow}>
+                  <View style={styles.csvImportTitleBlock}>
+                    <Text style={styles.csvImportTitle}>
+                      Importação em Lote (ERP / CSV)
+                    </Text>
+                    <Text style={styles.csvImportSubtitle}>
+                      Sincronize SKUs, saldos e locais via planilha
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.csvImportTogglePill,
+                      showCsvImportPanel && styles.csvImportTogglePillActive,
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => setShowCsvImportPanel((prev) => !prev)}
+                  >
+                    <Layers
+                      size={14}
+                      color={showCsvImportPanel ? TOKENS.ground : TOKENS.text}
+                      strokeWidth={1.75}
+                    />
+                    <Text
+                      style={[
+                        styles.csvImportToggleText,
+                        showCsvImportPanel && styles.csvImportToggleTextActive,
+                      ]}
+                    >
+                      {showCsvImportPanel ? 'Fechar' : 'Importar CSV'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {showCsvImportPanel && (
+                  <View style={styles.csvImportBody}>
+                    <Text style={styles.csvImportHint}>
+                      Formato aceito (vírgula ou ponto e vírgula):{'\n'}
+                      Código de Barras;Nome do Produto;Quantidade;Espaço
+                    </Text>
+                    <TextInput
+                      style={styles.csvImportInput}
+                      value={csvImportText}
+                      onChangeText={setCsvImportText}
+                      placeholder={
+                        '7891000100103;Caixa Organizadora 20L;15;Galpão A\n7892000200206;Parafusadeira 20V;4;Corredor B'
+                      }
+                      placeholderTextColor={TOKENS.faint}
+                      multiline
+                      numberOfLines={4}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <TouchableOpacity
+                      style={[
+                        styles.primaryInvertedPill,
+                        (!csvImportText.trim() || aImportarCsv) &&
+                          styles.controlDisabled,
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={handleImportarLoteCsv}
+                      disabled={!csvImportText.trim() || aImportarCsv}
+                    >
+                      {aImportarCsv ? (
+                        <ActivityIndicator size="small" color={TOKENS.ground} />
+                      ) : (
+                        <View style={styles.inlineIconButtonRow}>
+                          <Check
+                            size={16}
+                            color={TOKENS.ground}
+                            strokeWidth={2}
+                          />
+                          <Text style={styles.primaryInvertedPillText}>
+                            Processar Lote CSV
+                          </Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            </View>
           ) : null
         }
         contentContainerStyle={
-          items.length === 0 ? styles.emptyContainer : styles.listContent
+          displayedItems.length === 0 ? styles.emptyContainer : styles.listContent
         }
         renderItem={({ item }) => {
           const qtd = Number(item.quantity ?? 1);
@@ -2625,6 +2833,105 @@ const styles = StyleSheet.create({
   },
   clearSearchButton: {
     padding: 4,
+  },
+  stockFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  stockFilterPill: {
+    backgroundColor: TOKENS.surface,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: TOKENS.radiusControl,
+  },
+  stockFilterPillActive: {
+    backgroundColor: TOKENS.text,
+  },
+  stockFilterPillWarningActive: {
+    backgroundColor: TOKENS.pillWarningBg,
+  },
+  stockFilterPillText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  stockFilterPillTextActive: {
+    color: TOKENS.ground,
+  },
+  stockFilterPillWarningText: {
+    color: TOKENS.pillWarningInk,
+  },
+  csvImportCard: {
+    backgroundColor: TOKENS.surface,
+    borderRadius: TOKENS.radiusCard,
+    padding: 18,
+    marginBottom: TOKENS.gap,
+  },
+  csvImportHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  csvImportTitleBlock: {
+    flex: 1,
+    gap: 2,
+  },
+  csvImportTitle: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
+  },
+  csvImportSubtitle: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+  },
+  csvImportTogglePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.raised,
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: TOKENS.radiusControl,
+  },
+  csvImportTogglePillActive: {
+    backgroundColor: TOKENS.text,
+  },
+  csvImportToggleText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  csvImportToggleTextActive: {
+    color: TOKENS.ground,
+  },
+  csvImportBody: {
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: TOKENS.rule,
+    gap: 10,
+  },
+  csvImportHint: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    lineHeight: 18,
+    fontVariant: ['tabular-nums'],
+  },
+  csvImportInput: {
+    backgroundColor: TOKENS.raised,
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontVariant: ['tabular-nums'],
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    minHeight: 88,
+    textAlignVertical: 'top',
   },
 
   // Listas e Cards do Inventário ('true-black-flat': surface #111111, radius 20, sem borda, sem sombra)

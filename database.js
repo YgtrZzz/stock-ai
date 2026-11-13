@@ -433,8 +433,8 @@ export async function getItemByBarcode(barcode) {
 
 /**
  * Lista os itens do inventário com LEFT JOIN na tabela spaces,
- * filtrando opcionalmente pelo termo de busca (searchQuery).
- * @param {string} searchQuery Termo de busca opcional para filtrar por nome.
+ * filtrando opcionalmente pelo termo de busca (nome do produto, código de barras EAN/SKU ou nome do espaço).
+ * @param {string} searchQuery Termo de busca opcional.
  * @returns {Promise<Array<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, image_uri: string|null, space_name: string|null, created_at: string }>>}
  */
 export async function getItems(searchQuery = '') {
@@ -442,6 +442,7 @@ export async function getItems(searchQuery = '') {
   const termo = String(searchQuery ?? '').trim();
 
   if (termo) {
+    const padrao = `%${termo}%`;
     return db.getAllAsync(
       `
       SELECT
@@ -456,9 +457,11 @@ export async function getItems(searchQuery = '') {
       FROM items
       LEFT JOIN spaces ON items.space_id = spaces.id
       WHERE items.name LIKE ?
+         OR COALESCE(items.barcode, '') LIKE ?
+         OR COALESCE(spaces.name, '') LIKE ?
       ORDER BY items.id DESC;
       `,
-      [`%${termo}%`]
+      [padrao, padrao, padrao]
     );
   }
 
@@ -476,6 +479,89 @@ export async function getItems(searchQuery = '') {
     LEFT JOIN spaces ON items.space_id = spaces.id
     ORDER BY items.id DESC;
   `);
+}
+
+/**
+ * Importa/atualiza um lote de mercadorias (Bulk Upsert B2B) a partir de registros de catálogo/CSV.
+ * - Se o SKU (barcode) já existir, atualiza nome, quantidade e espaço preservando o image_uri existente.
+ * - Se o espaço informado não existir (e não for 'Sem local definido'), cria o espaço automaticamente.
+ *
+ * @param {Array<{ barcode?: string|null, name?: string, quantity?: number|string, space_name?: string|null }>} entries
+ * @returns {Promise<{ insertedCount: number, updatedCount: number, createdSpacesCount: number, totalProcessed: number }>}
+ */
+export async function bulkUpsertItemsFromCatalog(entries = []) {
+  const db = await initDatabase();
+  const safeEntries = Array.isArray(entries) ? entries : [];
+
+  const existingSpaces = await getSpaces();
+  const spaceMap = new Map();
+  for (const sp of existingSpaces) {
+    if (sp && sp.name) {
+      spaceMap.set(String(sp.name).trim().toLowerCase(), sp.id);
+    }
+  }
+
+  let insertedCount = 0;
+  let updatedCount = 0;
+  let createdSpacesCount = 0;
+  let totalProcessed = 0;
+
+  for (const raw of safeEntries) {
+    const rawName = String(raw?.name ?? '').trim();
+    if (!rawName) continue;
+
+    const rawBarcode = String(raw?.barcode ?? '').trim();
+    const barcode =
+      rawBarcode && rawBarcode !== '-' && rawBarcode.toLowerCase() !== 's/n'
+        ? rawBarcode
+        : null;
+
+    const parsedQty = parseInt(String(raw?.quantity ?? '1'), 10);
+    const quantity = Number.isFinite(parsedQty) ? Math.max(0, parsedQty) : 1;
+
+    const rawSpaceName = String(raw?.space_name ?? '').trim();
+    let spaceId = null;
+
+    if (
+      rawSpaceName &&
+      rawSpaceName !== '-' &&
+      rawSpaceName.toLowerCase() !== 'sem local definido'
+    ) {
+      const key = rawSpaceName.toLowerCase();
+      if (spaceMap.has(key)) {
+        spaceId = spaceMap.get(key);
+      } else {
+        const createdSpace = await addSpace(rawSpaceName, null, null);
+        spaceId = createdSpace.id;
+        spaceMap.set(key, spaceId);
+        createdSpacesCount += 1;
+      }
+    }
+
+    if (barcode) {
+      const existingItem = await getItemByBarcode(barcode);
+      if (existingItem) {
+        await db.runAsync(
+          'UPDATE items SET name = ?, quantity = ?, space_id = ? WHERE id = ?;',
+          [rawName, quantity, spaceId, existingItem.id]
+        );
+        updatedCount += 1;
+        totalProcessed += 1;
+        continue;
+      }
+    }
+
+    await insertItem(rawName, spaceId, quantity, barcode, null);
+    insertedCount += 1;
+    totalProcessed += 1;
+  }
+
+  return {
+    insertedCount,
+    updatedCount,
+    createdSpacesCount,
+    totalProcessed,
+  };
 }
 
 /**
@@ -538,8 +624,10 @@ export default {
   updateItemImage,
   getItemByBarcode,
   getItems,
+  bulkUpsertItemsFromCatalog,
   updateItemQuantity,
   deleteItem,
+  deletePersistedImageIfOwned,
   resetDatabaseConnectionForTests,
   inicializarBanco,
   adicionarEspaco,

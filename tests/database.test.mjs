@@ -283,4 +283,89 @@ describe('Database & Permanent Image Storage (TDD - Task 1)', () => {
     assert.equal(resTraversal, false);
     assert.equal(testEnv.deletedFiles.length, 0);
   });
+
+  it('searches items by product name, barcode (SKU/EAN), or space_name in getItems(searchQuery)', async () => {
+    await dbModule.initDatabase();
+    const corredorB = await dbModule.addSpace('Corredor B2B');
+    await dbModule.insertItem(
+      'Parafusadeira Impacto 20V',
+      corredorB.id,
+      8,
+      '7899988776655',
+      null
+    );
+    await dbModule.insertItem(
+      'Chave Inglesa Cromada',
+      null,
+      3,
+      '7890001112223',
+      null
+    );
+
+    const byBarcode = await dbModule.getItems('7899988');
+    assert.equal(byBarcode.length, 1);
+    assert.equal(byBarcode[0].name, 'Parafusadeira Impacto 20V');
+
+    const bySpace = await dbModule.getItems('Corredor B2B');
+    assert.equal(bySpace.length, 1);
+    assert.equal(bySpace[0].barcode, '7899988776655');
+  });
+
+  it('bulkUpsertItemsFromCatalog inserts new items, updates existing SKUs by barcode preserving image_uri, and auto-creates missing spaces', async () => {
+    await dbModule.initDatabase();
+    const galpaoA = await dbModule.addSpace('Galpão A');
+    const existing = await dbModule.insertItem(
+      'Fonte ATX 500W',
+      galpaoA.id,
+      2,
+      '7895005005001',
+      'file:///app/cache/Camera/fonte-atx.jpg'
+    );
+
+    assert.equal(
+      typeof dbModule.bulkUpsertItemsFromCatalog,
+      'function',
+      'bulkUpsertItemsFromCatalog must be exported'
+    );
+
+    const stats = await dbModule.bulkUpsertItemsFromCatalog([
+      {
+        barcode: '7895005005001',
+        name: 'Fonte ATX 500W Real',
+        quantity: 15,
+        space_name: 'Galpão A',
+      },
+      {
+        barcode: '7896006006002',
+        name: 'Cabo de Rede Cat6 305m',
+        quantity: 4,
+        space_name: 'Prateleira Telecom',
+      },
+      {
+        barcode: '',
+        name: 'Fita Isolante 20m',
+        quantity: 25,
+        space_name: 'Sem local definido',
+      },
+    ]);
+
+    assert.equal(stats.updatedCount, 1);
+    assert.equal(stats.insertedCount, 2);
+    assert.equal(stats.createdSpacesCount, 1);
+    assert.equal(stats.totalProcessed, 3);
+
+    const updatedSku = await dbModule.getItemByBarcode('7895005005001');
+    assert.equal(updatedSku.name, 'Fonte ATX 500W Real');
+    assert.equal(updatedSku.quantity, 15);
+    assert.equal(
+      updatedSku.image_uri,
+      existing.image_uri,
+      'must preserve existing image_uri during ERP CSV bulk upsert'
+    );
+
+    const newSku = await dbModule.getItemByBarcode('7896006006002');
+    assert.equal(newSku.name, 'Cabo de Rede Cat6 305m');
+    assert.equal(newSku.quantity, 4);
+    assert.equal(newSku.space_name, 'Prateleira Telecom');
+  });
 });

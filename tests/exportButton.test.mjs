@@ -175,7 +175,7 @@ test('CSV Export Engine & B2B ExportButton Integration (TDD)', async (t) => {
         /import\s+\{\s*generateAndShareInventoryCSV\s*\}\s+from\s+['"]\.\/utils\/exportCsv['"]/
       );
       assert.match(appSource, /generateAndShareInventoryCSV\(\s*items\s*,\s*spaces\s*\)/);
-      assert.match(appSource, /ListHeaderComponent=\{\s*!isHome\s*\?\s*\(\s*<ExportButton/);
+      assert.match(appSource, /ListHeaderComponent=\{\s*!isHome\s*\?\s*\(\s*(?:<View>\s*)?<ExportButton/);
     }
   );
 });
