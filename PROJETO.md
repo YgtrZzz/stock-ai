@@ -1,109 +1,27 @@
-# 📦 Armário Digital — Multi-Profile Inventory Tracker (Home & B2B)
+# 📦 Armário Digital - Documento Arquitetural e Roadmap (B2B Focus)
 
-> Sistema mobile de organização física e gestão de estoque com **arquitetura Multi-Perfil (Residencial e B2B)** orientada por Onboarding inicial, focado em **alta performance 100% offline** e **organização hierárquica de espaços**.
+## 1. Visão Geral do Produto
+O **Armário Digital** é um aplicativo mobile local-first de alta performance para controle de estoque e inventário, construído em React Native (Expo)[cite: 1]. O foco principal do sistema é atender pequenos e médios negócios (B2B) oferecendo segurança, velocidade e auditoria de dados, mantendo suporte secundário para uso doméstico através de perfis (Casa / Negócios)[cite: 1].
 
----
+## 2. Pilares de Arquitetura e Segurança
+- **Framework:** React Native via Expo SDK 58+[cite: 1].
+- **Banco de Dados (Local-First):** SQLite para máxima privacidade e velocidade. A estrutura relacional (Espaços -> Itens) suporta operações ACID e a persistência de imagens utiliza o `expo-file-system` para evitar perda de dados por limpeza de cache do OS[cite: 1].
+- **Visão Computacional (Edge AI):** Processamento local offline. Utilização do `react-native-fast-tflite` para rodar modelos YOLO[cite: 1], permitindo contagem de lotes, leitura rápida de código de barras e sugestão de nomes de produtos sem chamadas de rede.
+- **Integração de Dados:** O sistema deve suportar interoperabilidade padrão B2B, permitindo a importação/exportação de relatórios em CSV e planilhas, com compartilhamento nativo seguro.
 
-## 🎯 1. Visão Geral
+## 3. Design System
+- **Paleta e Superfícies:** Tema estrito `true-black-flat` (#000000 para fundos, #111111/#2a2a2a para cards)[cite: 1]. Sem sombras ou elevações excessivas.
+- **Tipografia:** Uso obrigatório de `font-variant: ['tabular-nums']` em qualquer dado financeiro, quantidade ou métrica.
+- **Iconografia:** Exclusivamente `lucide-react-native`. **Proibido o uso de emojis** em qualquer parte da interface ou código[cite: 1].
+- **Cores de Destaque:** Marcação de dados e caixas delimitadoras (bounding boxes) do YOLO utilizam verde-neon (#c6f24e).
 
-O **Armário Digital** opera sob uma arquitetura adaptativa **Multi-Perfil** que atende tanto **usuários domésticos (Uso Pessoal / Casa)** quanto **pequenos e médios empreendedores (B2B / Controle de Estoque)** a partir da mesma base sólida *Offline-First*.
+## 4. Status Atual de Desenvolvimento
+1. **Infraestrutura:** Limite de 260 caracteres do Windows (C++/Ninja) contornado. Repositório Git original (`stock-ai`) reconectado e limpo.
+2. **Dados:** Banco de Dados configurado com `image_uri` para suportar fotos[cite: 1], Onboarding com `AsyncStorage` funcional[cite: 1], navegação base estruturada[cite: 1].
+3. **Próximo Marco:** Finalizar o fluxo B2B do `expo-file-system` (captura e armazenamento persistente de imagens das mercadorias) e estruturar a exportação B2B de planilhas/CSV, preparando o terreno para o adaptador YOLO local.
 
-Na primeira abertura do aplicativo, um **Onboarding Inicial** pergunta ao usuário *"Como você vai usar o Armário Digital?"*, persistindo a escolha localmente via `@react-native-async-storage/async-storage` e adaptando dinamicamente toda a experiência de captura, terminologia e controles operacionais:
-
-* **🏠 Perfil Residencial (`'home'` — Uso Pessoal):** Focado na catalogação rápida de pertences domésticos, roupas, ferramentas e caixas organizadoras por cômodos e sub-compartimentos, destacando o botão principal de **Tirar Foto do Item** e ocultando complexidades de códigos comerciais.
-* **🏢 Perfil Comercial (`'business'` — Para meu Negócio):** Focado em alta velocidade de giro de estoque B2B, ativando o **Scanner Nativo de Códigos de Barras e QR Codes** com **Soma Automática (`+1`)** para SKUs já cadastrados e **atalhos rápidos de lote** (`+1`, `+5`, `+10`, `+25`).
-
----
-
-## 🛠️ 2. Stack Tecnológico
-
-| Camada | Tecnologia | Papel na Arquitetura |
-| :--- | :--- | :--- |
-| **Core Mobile** | **React Native (`0.88`)** | Renderização nativa multiplataforma (Android / iOS) com alto desempenho |
-| **Ecossistema & Build** | **Expo (`SDK 58`)** | Runtime moderno, gerenciamento de módulos nativos e *Developer Experience* |
-| **Persistência Relacional** | **SQLite (`expo-sqlite`)** | Banco de dados relacional embarcado com suporte a `WAL`, *Foreign Keys* e migração não-destrutiva |
-| **Armazenamento de Mídia** | **Expo FileSystem (`expo-file-system/legacy`)** | Realocação permanente de fotos do cache da câmera para `FileSystem.documentDirectory` |
-| **Estado de Perfil & Onboarding** | **AsyncStorage (`@react-native-async-storage/async-storage`)** | Persistência local da preferência de perfil (`'home'` ou `'business'`) |
-| **Navegação** | **React Navigation (`@react-navigation/bottom-tabs`)** | Arquitetura em Bottom Tabs com controle estrito de ciclo de vida por foco (`useFocusEffect` / `useIsFocused`) |
-| **Captura & Sensores** | **Expo Camera (`expo-camera`)** | Captura fotográfica de itens (`'home'`) e leitor de códigos de barras/QR Code (`'business'`) |
-| **Visão Computacional (Edge AI)** | **`vision/yoloAdapter.js` + `react-native-svg`** | Contrato de inferência YOLO (`.tflite`) e overlay vetorial de *Bounding Boxes* em tempo real |
-| **Design System & Ícones** | **`true-black-flat` + `lucide-react-native`** | Tokens semânticos em preto absoluto (`#000000` / `#111111`) e ícones vetoriais SVG |
-| **Qualidade & TDD** | **Node Test Runner (`node:test` + `node:sqlite`)** | Suíte automatizada de testes de contrato SQLite e visão computacional |
-
----
-
-## ✨ 3. Arquitetura e Funcionalidades Concluídas (Features)
-
-### 🚀 Onboarding Inicial e Arquitetura Multi-Perfil (`ProfileContext`)
-* Verificação assíncrona no `useEffect` de abertura lendo a chave `@armario_digital:user_profile` no `AsyncStorage`.
-* Caso nenhum perfil esteja definido, exibe a tela **`OnboardingScreen`** no estilo `true-black-flat` com dois grandes cards de decisão:
-  1. **Uso Pessoal (Organizar minha casa)** → Grava `'home'`.
-  2. **Para meu Negócio (Controle de estoque)** → Grava `'business'`.
-* Botão rápido no cabeçalho superior permitindo alternar entre os perfis **Casa** e **Negócio** a qualquer momento.
-
-### 📷 Captura Fotográfica Nativa e Adaptação Dinâmica do Scanner (`'home'` vs. `'business'`)
-* **Captura Nativa via `CameraView` (`takePictureAsync`):**
-  * Utilização de `useRef` (`cameraRef`) conectada à `CameraView` com botão de captura estilizado em `true-black-flat` e ícone vetorial `Camera` (Lucide, zero emojis).
-  * Armazena o URI da fotografia no estado `capturedImage` e exibe uma **miniatura temporária de pré-visualização (`<Image>`)** diretamente no formulário antes de persistir o registo no SQLite (`image_uri`).
-* **No Perfil `'home'` (Residencial):**
-  * Oculta o painel de leitura de código de barras.
-  * Destaca um grande botão primário invertido **"Tirar Foto do Item"**, acionando `takePictureAsync()` com feedback tátil e direcionando o foco para nomear o objeto e escolher o cômodo.
-* **No Perfil `'business'` (B2B):**
-  * Ativa o leitor óptico contínuo de códigos comerciais (`qr`, `ean13`, `ean8`, `upc_a`, `upc_e`, `code128`) com trava anti-spam (`lastScannedData`), além de botão auxiliar rápido para captura opcional de foto do SKU.
-  * **Soma Automática de SKUs Conhecidos:** Ao bipar um código já existente no banco (`getItemByBarcode`), dispensa o formulário manual, incrementa `+1` no estoque (`updateItemQuantity`), emite vibração dupla (`[0, 200, 200, 200]`) e atualiza o inventário imediatamente.
-  * **Controle Rápido de Lote:** Exibe pílulas de incremento rápido (`+1`, `+5`, `+10`, `+25`, `1 un.`) para entrada ágil de caixas fechadas.
-
-### 🖼️ Motor de Renderização Dinâmica e Resiliente no Inventário (`<Image>` + `onError`)
-* **Armazenamento Permanente (`persistCapturedImage`):** Antes de gravar qualquer fotografia no SQLite, o arquivo temporário gerado pela câmera é movido automaticamente do cache volátil para `${FileSystem.documentDirectory}armario_images/` via `expo-file-system/legacy`.
-* **Renderização Adaptativa por Perfil com Fallback `onError`:**
-  * **Modo Residencial (`userProfile === 'home'`):** Renderiza um banner superior de ponta a ponta (*full-bleed cover*) no topo do card. Caso o arquivo local seja inacessível (`onError`), degrada graciosamente para o placeholder `true-black-flat` (`homeCardCoverFallback` com ícone vetorial `CameraOff`).
-  * **Modo Comercial (`userProfile === 'business'`):** Renderiza a imagem como uma miniatura circular (*avatar* `44x44`) à esquerda do título do SKU, com fallback vetorial circular (`businessAvatarFallback` com ícone `Package`) em caso de erro de leitura.
-
-### 🤖 Infraestrutura Nativa para Modelo YOLO / Edge AI (`.tflite`) & Contexto Aberto (*Zero-Shot / Open-Vocabulary*)
-* **Estratégia de Classificação Genérica (*Zero-Shot / Open-Vocabulary*):**
-  * O modelo YOLO embarcado não fica restrito a um catálogo fechado de SKUs: ele atua como um **classificador de categorias genéricas de vocabulário aberto (*Zero-Shot / Open-Vocabulary*)** para auxiliar o preenchimento rápido de metadados (sugestão de categoria/nome no perfil `'home'` e contagem de objetos/volumes no perfil `'business'`), enquanto as **fotografias reais capturadas** (tanto dos **Itens** quanto dos **Locais/Espaços**) garantem a **verificação visual absoluta** para o usuário final.
-* **Camada de Domínio (`vision/yoloAdapter.js`):**
-  * Normalização, *clamping* de coordenadas `[0, 1]` e ordenação por confiança via `normalizeDetections`.
-  * Resumo semântico adaptado ao perfil via `summarizeDetectionsForProfile`:
-    * **`'home'` (Residencial):** Destaca a classe principal (`primaryLabel`, `primaryConfidence`) para sugestão imediata do nome/categoria do objeto.
-    * **`'business'` (B2B):** Contabiliza todas as instâncias detectadas (`totalDetected`, `countsByLabel`, `dominantLabel`) para preenchimento automático de lote.
-  * Contrato assíncrono `runYoloInference(input, runtimeAdapter)` pronto para acoplamento direto do runtime nativo `.tflite` (ex.: `react-native-fast-tflite` em *Development Build* via `npx expo run:android|ios`).
-* **Overlay Vetorial Nativo (`components/YoloCameraOverlay.js`):**
-  * Desenha *Bounding Boxes* vetoriais (`Svg`, `Rect` do `react-native-svg`) e pílulas de confiança com `tabular-nums` e cor de destaque `#c6f24e`, desmontando junto com a `CameraView` quando a aba Scanner está inativa para preservar bateria.
-
-### 🗺️ Mapa Visual de Espaços e Hierarquia de Armazenagem (Drill-down Infinito)
-* **Mapa Visual (`spaces.image_uri`):** Permite fotografar não apenas os itens, mas também os próprios **Locais de armazenamento** (cômodos, armários, prateleiras, caixas organizadoras) ao criar ou editar um Espaço (`addSpace`, `updateSpace`, `updateSpaceImage`), movendo as fotos para `${FileSystem.documentDirectory}armario_images/` e renderizando banners visuais na `FlatList` com fallback resiliente `onError`.
-* **Drill-down Infinito:** Navegação em árvore de profundidade arbitrária utilizando a chave recursiva `parent_id` na tabela `spaces` (ex: `Quarto Casal > Closet > Gaveta 2` no modo Casa, ou `Estoque Central > Prateleira A > Caixa 04` no modo Negócio).
-
-### 🗃️ Banco de Dados Relacional (`armario.db` — Schema v6 Não-Destrutivo)
-Modelagem SQLite estruturada com integridade referencial ativa (`PRAGMA foreign_keys = ON`) e migração incremental idempotente via `PRAGMA table_info(spaces)` e `PRAGMA table_info(items)` (`ALTER TABLE` sem perda de registros ou da árvore hierárquica):
-* **Tabela `spaces`:** Armazena os cômodos ou setores físicos com auto-relacionamento e fotografia permanente do Mapa Visual (`id`, `name`, `parent_id`, `image_uri`, `created_at`).
-* **Tabela `items`:** Armazena os itens com controle de volume, código comercial e fotografia permanente (`id`, `name`, `space_id`, `quantity`, `barcode`, `image_uri`, `created_at`), conectada à tabela `spaces` via **Foreign Key (`space_id`)** e consultada via `LEFT JOIN`.
-
-### ⚡ Giro de Estoque Rápido com *Optimistic UI*
-* Painel de ações rápidas diretamente no card de cada item na `FlatList` (**Diminuir**, **Aumentar** e **Excluir**).
-* Implementado com o padrão **Optimistic UI Updates**: o estado local (`setItems`) é atualizado instantaneamente no toque e a persistência no SQLite ocorre em *background*, eliminando qualquer *flickering* na lista.
-
-### 🔍 Busca em Tempo Real (`LEFT JOIN`)
-* Barra de pesquisa fixa no topo da aba **Inventário** integrada a consultas SQL parametrizadas (`WHERE items.name LIKE ?`) com `LEFT JOIN` na tabela `spaces`, exibindo localização, código de barras (quando aplicável) e pílula semântica de quantidade.
-
----
-
-## 🧠 4. Decisões de Engenharia (Histórico Técnico)
-
-### 1. Remoção do TensorFlow.js / MobileNet Legado
-Abandonamos e removemos completamente a integração inicial com TensorFlow.js/MobileNet devido à baixa precisão comercial do dataset genérico ImageNet para produtos específicos e ao peso das dependências legadas, preparando o terreno para um pipeline enxuto com modelo YOLO customizado.
-
-### 2. Design System `true-black-flat` (`design-taste-frontend`)
-Refatoramos toda a interface aplicando estritamente os tokens `true-black-flat`: elevação exclusivamente por degrau de luminosidade (`#000000` → `#111111` → `#2a2a2a`), ausência de bordas ou sombras artificiais em cards, controles primários por inversão (pílulas brancas `#ffffff` com texto `#000000`), algarismos tabulares (`tabular-nums`) e substituição total de emojis por ícones vetoriais SVG (`lucide-react-native`).
-
----
-
-## 🚀 5. Roadmap e Próximos Passos
-
-* **✅ [Concluído] Design System `true-black-flat` & Arquitetura Multi-Perfil:**
-  * Implementação do Onboarding Inicial (`'home'` vs. `'business'`) com adaptação dinâmica do Scanner e validação de UI via `design-taste-frontend`.
-* **🎯 [Próximo Grande Marco] Visão Computacional Avançada (Custom YOLO):**
-  * Treinamento de um modelo **YOLO** customizado utilizando **Transfer Learning** com datasets residenciais e B2B.
-* **📱 Inferência 100% Offline no Dispositivo (Edge AI):**
-  * Integração do modelo treinado no app via formato **`.tflite` (TensorFlow Lite)** para detecção e contagem automática de itens 100% offline (*Edge AI*).
+## 5. Regras de Engajamento para Agentes de IA
+Qualquer IA ou agente autônomo (como Roo Code / Cline) operando neste repositório DEVE seguir estritamente as regras abaixo:
+1. **Vertical Slicing:** Desenvolver uma funcionalidade completa (DB -> Lógica -> UI) antes de iniciar a próxima.
+2. **Test-Driven & Linting:** Validar regras de Design System e criar testes unitários (Node nativo) antes de implementar lógica complexa de negócios ou banco de dados. Nunca utilizar comandos destrutivos (ex: `DROP TABLE`) em produção.
+3. **Autonomia Segura:** O agente deve operar continuamente, pedindo aprovação humana **apenas** em Checkpoints arquiteturais (fim de uma funcionalidade), decisões irreversíveis de banco de dados, ou necessidade de teste físico no aparelho (ex: Câmera/Scanner).
