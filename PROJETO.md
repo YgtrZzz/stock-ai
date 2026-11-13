@@ -16,9 +16,11 @@ O **Armário Digital** é um aplicativo mobile local-first de alta performance p
 - **Cores de Destaque:** Marcação de dados e caixas delimitadoras (bounding boxes) do YOLO utilizam verde-neon (#c6f24e).
 
 ## 4. Status Atual de Desenvolvimento
-1. **Infraestrutura:** Limite de 260 caracteres do Windows (C++/Ninja) contornado. Repositório Git original (`stock-ai`) reconectado e limpo.
-2. **Dados:** Banco de Dados configurado com `image_uri` para suportar fotos[cite: 1], Onboarding com `AsyncStorage` funcional[cite: 1], navegação base estruturada[cite: 1].
-3. **Próximo Marco:** Finalizar o fluxo B2B do `expo-file-system` (captura e armazenamento persistente de imagens das mercadorias) e estruturar a exportação B2B de planilhas/CSV, preparando o terreno para o adaptador YOLO local.
+1. **Infraestrutura:** Limite de 260 caracteres do Windows (C++/Ninja) contornado (`C:\Users\ygorg\deteccao-de-objetos\ArmarioDigital` + staging CMake curto). Repositório Git original (`stock-ai`) reconectado e limpo.
+2. **Dados e Ciclo de Vida de Imagens (`expo-file-system`):** Banco de Dados SQLite (`armario.db`) configurado com `image_uri` em `spaces` e `items`, Onboarding com `AsyncStorage` funcional e navegação base estruturada. Ciclo de vida completo de imagens implementado com cópia determinística para `documentDirectory/armario_images/` (`persistCapturedImage`), limpeza automática de arquivos órfãos ao atualizar/excluir registros (`deletePersistedImageIfOwned` com proteção contra Path Traversal) e vinculação automática de foto capturada ao bipar SKU existente no modo B2B (`updateItemImage`).
+3. **Interoperabilidade B2B (Exportação CSV):** Componente nativo `components/ExportButton.js` (`true-black-flat`, `tabular-nums`) e motor `utils/exportCsv.js` (`expo-sharing`) concluídos, com sanitização RFC 4180 e proteção contra OWASP CSV Formula Injection (`=`, `+`, `-`, `@`).
+4. **Visão Computacional (Edge AI / YOLO):** Adaptador `vision/yoloAdapter.js` e overlay `components/YoloCameraOverlay.js` implementados com decodificação YOLOv8 COCO 80 classes (`[1, 84, 8400]`), diagnóstico visual de status na câmera (`resolveYoloEngineStatus`) e fallback resiliente (`try/catch`) que mantém o scanner óptico e a câmera 100% operacionais caso o binário `.tflite` esteja em modo placeholder.
+5. **Próximo Marco Arquitetural:** Substituir o arquivo placeholder `assets/models/yolov8n.tflite` pelo binário YOLOv8n quantizado (Float16/Int8) real para validação em dispositivo físico, e implementar **Importação de Planilha CSV em Lote (Bulk Upsert B2B)** para integração bidirecional com ERPs locais.
 
 ## 5. Regras de Engajamento para Agentes de IA
 Qualquer IA ou agente autônomo (como Roo Code / Cline) operando neste repositório DEVE seguir estritamente as regras abaixo:

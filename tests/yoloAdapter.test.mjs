@@ -5,6 +5,7 @@ import {
   decodeYoloOutputTensors,
   normalizeDetections,
   projectBoundingBoxToViewport,
+  resolveYoloEngineStatus,
   summarizeDetectionsForProfile,
   runYoloInference,
 } from '../vision/yoloAdapter.js';
@@ -234,5 +235,37 @@ describe('YOLO Edge AI Adapter & Profile Summarizer (TDD - Task 2)', () => {
     assert.equal(result.summary.profile, 'home');
     assert.equal(result.summary.primaryLabel, COCO_CLASSES[63]);
     assert.equal(result.summary.suggestedItemName, COCO_CLASSES[63]);
+  });
+
+  it('resolves Edge AI engine status for UI diagnostics and degrades gracefully if TFLite runtime throws', async () => {
+    assert.equal(typeof resolveYoloEngineStatus, 'function');
+
+    const readyState = resolveYoloEngineStatus({
+      state: 'loaded',
+      model: { run: async () => [] },
+    });
+    assert.equal(readyState.status, 'ready');
+    assert.equal(readyState.isReady, true);
+    assert.equal(readyState.badgeLabel, 'YOLO Edge AI · Ativo');
+
+    const fallbackState = resolveYoloEngineStatus({ state: 'error' });
+    assert.equal(fallbackState.status, 'fallback');
+    assert.equal(fallbackState.isReady, false);
+    assert.equal(fallbackState.badgeLabel, 'Scanner Óptico · Offline');
+
+    const brokenTfliteModel = {
+      async run() {
+        throw new Error('GPU Delegate initialization failed');
+      },
+    };
+
+    const result = await runYoloInference(
+      { uri: 'file:///app/cache/photo.jpg', userProfile: 'business' },
+      brokenTfliteModel
+    );
+
+    assert.deepEqual(result.detections, []);
+    assert.equal(result.summary.hasDetections, false);
+    assert.equal(result.engineStatus, 'fallback');
   });
 });

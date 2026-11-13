@@ -50,8 +50,12 @@ export default function ExportButton({
   onPress,
 }) {
   const [internalLoading, setInternalLoading] = useState(false);
+  const safeCount = Number.isFinite(Number(itemCount)) ? Number(itemCount) : 0;
+  const safeUnits = Number.isFinite(Number(totalUnits))
+    ? Number(totalUnits)
+    : 0;
   const isBusy = Boolean(loading || internalLoading);
-  const isDisabled = Boolean(disabled || isBusy);
+  const isDisabled = Boolean(disabled || isBusy || safeCount === 0);
 
   const handlePress = async () => {
     if (isDisabled) return;
@@ -73,11 +77,6 @@ export default function ExportButton({
       setInternalLoading(false);
     }
   };
-
-  const safeCount = Number.isFinite(Number(itemCount)) ? Number(itemCount) : 0;
-  const safeUnits = Number.isFinite(Number(totalUnits))
-    ? Number(totalUnits)
-    : 0;
 
   return (
     <View style={styles.container}>

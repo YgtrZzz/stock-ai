@@ -453,9 +453,40 @@ export function summarizeDetectionsForProfile(
 }
 
 /**
+ * Resolve o estado diagnóstico do motor Edge AI (.tflite) para exibição na UI
+ * sem bloquear o scanner óptico de código de barras quando em modo fallback.
+ *
+ * @param {{ state?: 'loading' | 'loaded' | 'error', model?: object | null } | null} [plugin]
+ */
+export function resolveYoloEngineStatus(plugin = null) {
+  if (plugin && plugin.state === 'loaded' && Boolean(plugin.model)) {
+    return {
+      status: 'ready',
+      isReady: true,
+      badgeLabel: 'YOLO Edge AI · Ativo',
+    };
+  }
+
+  if (plugin && plugin.state === 'loading') {
+    return {
+      status: 'loading',
+      isReady: false,
+      badgeLabel: 'YOLO Edge AI · Carregando',
+    };
+  }
+
+  return {
+    status: 'fallback',
+    isReady: false,
+    badgeLabel: 'Scanner Óptico · Offline',
+  };
+}
+
+/**
  * Executa a inferência YOLO real utilizando o modelo carregado pelo react-native-fast-tflite
  * (via model.run([inputBuffer]) ou model.runSync([inputBuffer])) e retorna os arrays normalizados
  * de predição junto ao resumo por perfil ('home' vs 'business').
+ * Degrada graciosamente (sem crashar a câmera) caso o runtime nativo lance exceção.
  *
  * @param {{ uri?: string, width?: number, height?: number, tensorBuffer?: ArrayBuffer | ArrayBufferView, userProfile?: 'home'|'business', minConfidence?: number }} input
  * @param {{ run?: (inputs: ArrayBuffer[]) => Promise<ArrayBuffer[]>, runSync?: (inputs: ArrayBuffer[]) => ArrayBuffer[], inputs?: Array<{ shape?: number[], dataType?: string }>, detect?: (input: object) => Promise<Array> } | null} [tfliteModelOrAdapter]
@@ -469,26 +500,34 @@ export async function runYoloInference(input = {}, tfliteModelOrAdapter = null) 
   };
 
   let detections = [];
+  let engineStatus = tfliteModelOrAdapter ? 'ready' : 'fallback';
 
   if (tfliteModelOrAdapter) {
-    if (
-      typeof tfliteModelOrAdapter.run === 'function' ||
-      typeof tfliteModelOrAdapter.runSync === 'function'
-    ) {
-      const inputDescriptor = Array.isArray(tfliteModelOrAdapter.inputs)
-        ? tfliteModelOrAdapter.inputs[0]
-        : undefined;
-      const inputBuffer = prepareInputTensor(input, inputDescriptor);
+    try {
+      if (
+        typeof tfliteModelOrAdapter.run === 'function' ||
+        typeof tfliteModelOrAdapter.runSync === 'function'
+      ) {
+        const inputDescriptor = Array.isArray(tfliteModelOrAdapter.inputs)
+          ? tfliteModelOrAdapter.inputs[0]
+          : undefined;
+        const inputBuffer = prepareInputTensor(input, inputDescriptor);
 
-      const outputBuffers =
-        typeof tfliteModelOrAdapter.run === 'function'
-          ? await tfliteModelOrAdapter.run([inputBuffer])
-          : tfliteModelOrAdapter.runSync([inputBuffer]);
+        const outputBuffers =
+          typeof tfliteModelOrAdapter.run === 'function'
+            ? await tfliteModelOrAdapter.run([inputBuffer])
+            : tfliteModelOrAdapter.runSync([inputBuffer]);
 
-      detections = decodeYoloOutputTensors(outputBuffers, options);
-    } else if (typeof tfliteModelOrAdapter.detect === 'function') {
-      const rawDetections = (await tfliteModelOrAdapter.detect(input)) || [];
-      detections = normalizeDetections(rawDetections, options);
+        detections = decodeYoloOutputTensors(outputBuffers, options);
+      } else if (typeof tfliteModelOrAdapter.detect === 'function') {
+        const rawDetections = (await tfliteModelOrAdapter.detect(input)) || [];
+        detections = normalizeDetections(rawDetections, options);
+      } else {
+        engineStatus = 'fallback';
+      }
+    } catch {
+      detections = [];
+      engineStatus = 'fallback';
     }
   }
 
@@ -501,7 +540,8 @@ export async function runYoloInference(input = {}, tfliteModelOrAdapter = null) 
   return {
     detections,
     summary,
-    modelLoaded: Boolean(tfliteModelOrAdapter),
+    modelLoaded: Boolean(tfliteModelOrAdapter) && engineStatus === 'ready',
+    engineStatus,
   };
 }
 
@@ -515,5 +555,6 @@ export default {
   decodeYoloOutputTensors,
   projectBoundingBoxToViewport,
   summarizeDetectionsForProfile,
+  resolveYoloEngineStatus,
   runYoloInference,
 };

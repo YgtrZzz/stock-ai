@@ -38,7 +38,13 @@ export function escapeCsvCell(value) {
 
   const rawString = String(value);
   const hadLineBreak = /[\r\n]/.test(rawString);
-  const normalized = rawString.replace(/\r?\n/g, ' ').trim();
+  let normalized = rawString.replace(/\r?\n/g, ' ').trim();
+
+  // Proteção OWASP contra CSV Formula Injection (=, +, -, @ no início da célula)
+  if (/^[=+\-@]/.test(normalized)) {
+    normalized = `'${normalized}`;
+  }
+
   const needsQuotes =
     hadLineBreak || normalized.includes(',') || normalized.includes('"');
 

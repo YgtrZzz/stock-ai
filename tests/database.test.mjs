@@ -235,4 +235,52 @@ describe('Database & Permanent Image Storage (TDD - Task 1)', () => {
     assert.equal(testEnv.movedFiles.length, 0);
     assert.equal(saved.image_uri, alreadyPermanentUri);
   });
+
+  it('deletes the orphaned image file from armario_images/ when deleteItem or updateItemImage replaces it', async () => {
+    await dbModule.initDatabase();
+    const item = await dbModule.insertItem(
+      'Monitor Industrial 24"',
+      null,
+      4,
+      '7891112223334',
+      'file:///app/cache/Camera/monitor-old.jpg'
+    );
+    const firstPermanentUri = item.image_uri;
+    assert.ok(firstPermanentUri.startsWith('file:///app/documents/armario_images/'));
+    assert.equal(testEnv.deletedFiles.length, 0);
+
+    // Act 1: Substitui a foto do SKU por uma nova captura
+    const secondPermanentUri = await dbModule.updateItemImage(
+      item.id,
+      'file:///app/cache/Camera/monitor-new.jpg'
+    );
+    assert.notEqual(secondPermanentUri, firstPermanentUri);
+    assert.equal(testEnv.deletedFiles.length, 1);
+    assert.equal(testEnv.deletedFiles[0], firstPermanentUri);
+
+    // Act 2: Exclui o item do banco e verifica limpeza da segunda foto
+    await dbModule.deleteItem(item.id);
+    assert.equal(testEnv.deletedFiles.length, 2);
+    assert.equal(testEnv.deletedFiles[1], secondPermanentUri);
+  });
+
+  it('blocks Path Traversal and refuses to delete files outside armario_images/', async () => {
+    await dbModule.initDatabase();
+    assert.equal(
+      typeof dbModule.deletePersistedImageIfOwned,
+      'function',
+      'deletePersistedImageIfOwned must be exported'
+    );
+
+    const externalUri = 'file:///app/documents/armario.db';
+    const traversalUri =
+      'file:///app/documents/armario_images/../../secret_config.json';
+
+    const resExternal = await dbModule.deletePersistedImageIfOwned(externalUri);
+    const resTraversal = await dbModule.deletePersistedImageIfOwned(traversalUri);
+
+    assert.equal(resExternal, false);
+    assert.equal(resTraversal, false);
+    assert.equal(testEnv.deletedFiles.length, 0);
+  });
 });

@@ -63,6 +63,7 @@ import {
   updateSpace,
   getSpaces,
   insertItem,
+  updateItemImage,
   getItemByBarcode,
   getItems,
   updateItemQuantity,
@@ -72,7 +73,10 @@ import { useTensorflowModel } from 'react-native-fast-tflite';
 import ExportButton from './components/ExportButton';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
 import { generateAndShareInventoryCSV } from './utils/exportCsv';
-import { runYoloInference } from './vision/yoloAdapter';
+import {
+  resolveYoloEngineStatus,
+  runYoloInference,
+} from './vision/yoloAdapter';
 
 const YOLO_MODEL_ASSET = require('./assets/models/yolov8n.tflite');
 const YOLO_DELEGATES = Platform.OS === 'ios' ? ['core-ml'] : ['android-gpu'];
@@ -263,6 +267,7 @@ function ScannerScreen({ onInventoryUpdated }) {
 
   const [permission, requestPermission] = useCameraPermissions();
   const yoloPlugin = useTensorflowModel(YOLO_MODEL_ASSET, YOLO_DELEGATES);
+  const yoloEngineStatus = resolveYoloEngineStatus(yoloPlugin);
   const [nome, setNome] = useState('');
   const [quantidade, setQuantidade] = useState('1');
   const [currentBarcode, setCurrentBarcode] = useState(null);
@@ -329,6 +334,11 @@ function ScannerScreen({ onInventoryUpdated }) {
       if (itemExistente) {
         const novaQtd = Number(itemExistente.quantity ?? 1) + 1;
         await updateItemQuantity(itemExistente.id, novaQtd);
+        if (capturedImage) {
+          await updateItemImage(itemExistente.id, capturedImage);
+          setCapturedImage(null);
+          setYoloDetections([]);
+        }
 
         setCurrentBarcode(null);
         setNome('');
@@ -523,6 +533,31 @@ function ScannerScreen({ onInventoryUpdated }) {
           }
           onBarcodeScanned={isBusiness ? handleBarcodeScanned : undefined}
         />
+        <View
+          style={[
+            styles.yoloEngineStatusPill,
+            yoloEngineStatus.isReady && styles.yoloEngineStatusPillReady,
+          ]}
+          pointerEvents="none"
+        >
+          {yoloEngineStatus.isReady ? (
+            <Layers
+              size={13}
+              color={TOKENS.pillPositiveInk}
+              strokeWidth={1.75}
+            />
+          ) : (
+            <ScanBarcode size={13} color={TOKENS.muted} strokeWidth={1.5} />
+          )}
+          <Text
+            style={[
+              styles.yoloEngineStatusText,
+              yoloEngineStatus.isReady && styles.yoloEngineStatusTextReady,
+            ]}
+          >
+            {yoloEngineStatus.badgeLabel}
+          </Text>
+        </View>
         <YoloCameraOverlay
           detections={yoloDetections}
           userProfile={userProfile}
@@ -2039,6 +2074,30 @@ const styles = StyleSheet.create({
   activeCameraWrapper: {
     flex: 1,
     position: 'relative',
+  },
+  yoloEngineStatusPill: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.surface,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: TOKENS.radiusControl,
+  },
+  yoloEngineStatusPillReady: {
+    backgroundColor: TOKENS.pillPositiveBg,
+  },
+  yoloEngineStatusText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  yoloEngineStatusTextReady: {
+    color: TOKENS.pillPositiveInk,
   },
   camera: {
     flex: 1,

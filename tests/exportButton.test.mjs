@@ -79,6 +79,24 @@ test('CSV Export Engine & B2B ExportButton Integration (TDD)', async (t) => {
   );
 
   await t.test(
+    'neutralizes OWASP CSV Formula Injection payloads (=, +, -, @) without altering legitimate numeric barcodes or quantities',
+    () => {
+      assert.equal(
+        escapeCsvCell("=CMD|' /C calc'!A0"),
+        "'=CMD|' /C calc'!A0"
+      );
+      assert.equal(
+        escapeCsvCell('+IMPORTXML(A1, "//secret")'),
+        '"+IMPORTXML(A1, ""//secret"")"'.replace('"+', '"\'+')
+      );
+      assert.equal(escapeCsvCell('@SUM(1+1)'), "'@SUM(1+1)");
+      assert.equal(escapeCsvCell('-1+1=0'), "'-1+1=0");
+      assert.equal(escapeCsvCell('7891000100103'), '7891000100103');
+      assert.equal(escapeCsvCell(250), '250');
+    }
+  );
+
+  await t.test(
     'generateAndShareInventoryCSV saves Relatorio_Estoque.csv via expo-file-system/legacy and invokes Sharing.shareAsync with mimeType text/csv',
     async () => {
       const writtenFiles = [];

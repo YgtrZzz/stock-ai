@@ -92,6 +92,50 @@ export async function persistCapturedImage(sourceUri) {
 }
 
 /**
+ * Remove com segurança uma fotografia antiga armazenada em FileSystem.documentDirectory/armario_images/.
+ * Bloqueia qualquer tentativa de Path Traversal ('..') ou exclusão fora do diretório gerenciado.
+ *
+ * @param {string|null|undefined} targetUri URI do arquivo a ser removido.
+ * @returns {Promise<boolean>} true se o arquivo pertencia a armario_images/ e foi removido; false caso contrário.
+ */
+export async function deletePersistedImageIfOwned(targetUri) {
+  const limpo = targetUri ? String(targetUri).trim() : '';
+  if (!limpo) return false;
+
+  // Proteção estrita contra Path Traversal ou caracteres de escape de diretório
+  if (limpo.includes('..') || limpo.includes('\\') || limpo.includes('%2e') || limpo.includes('%2E')) {
+    return false;
+  }
+
+  const docDir = FileSystem?.documentDirectory;
+  if (!docDir) return false;
+
+  const baseDir = docDir.endsWith('/')
+    ? `${docDir}${IMAGES_SUBDIR}`
+    : `${docDir}/${IMAGES_SUBDIR}`;
+
+  if (!limpo.startsWith(baseDir)) {
+    return false;
+  }
+
+  const fileNamePart = limpo.slice(baseDir.length);
+  if (!fileNamePart || fileNamePart.includes('/') || !/^[A-Za-z0-9._-]+$/.test(fileNamePart)) {
+    return false;
+  }
+
+  try {
+    if (typeof FileSystem.deleteAsync === 'function') {
+      await FileSystem.deleteAsync(limpo, { idempotent: true });
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.warn('[Database] Aviso ao limpar imagem antiga órfã:', error);
+    return false;
+  }
+}
+
+/**
  * Inicializa o banco 'armario.db' de forma não-destrutiva.
  * Garante a criação das tabelas 'spaces' e 'items' e aplica migrações incrementais
  * via PRAGMA table_info(items) sem apagar registros existentes.
@@ -212,12 +256,19 @@ export async function addSpace(name, parent_id = null, image_uri = null) {
  * @returns {Promise<string|null>} Novo URI permanente persistido.
  */
 export async function updateSpaceImage(id, image_uri = null) {
-  const finalImageUri = await persistCapturedImage(image_uri);
   const db = await initDatabase();
+  const anterior = await db.getFirstAsync(
+    'SELECT image_uri FROM spaces WHERE id = ?;',
+    [id]
+  );
+  const finalImageUri = await persistCapturedImage(image_uri);
   await db.runAsync('UPDATE spaces SET image_uri = ? WHERE id = ?;', [
     finalImageUri,
     id,
   ]);
+  if (anterior?.image_uri && anterior.image_uri !== finalImageUri) {
+    await deletePersistedImageIfOwned(anterior.image_uri);
+  }
   return finalImageUri;
 }
 
@@ -229,13 +280,21 @@ export async function updateSpaceImage(id, image_uri = null) {
  */
 export async function updateSpace(id, { name, image_uri = null } = {}) {
   const nome = limparNome(name);
-  const finalImageUri = await persistCapturedImage(image_uri);
   const db = await initDatabase();
+  const anterior = await db.getFirstAsync(
+    'SELECT image_uri FROM spaces WHERE id = ?;',
+    [id]
+  );
+  const finalImageUri = await persistCapturedImage(image_uri);
 
   await db.runAsync(
     'UPDATE spaces SET name = ?, image_uri = ? WHERE id = ?;',
     [nome, finalImageUri, id]
   );
+
+  if (anterior?.image_uri && anterior.image_uri !== finalImageUri) {
+    await deletePersistedImageIfOwned(anterior.image_uri);
+  }
 
   return {
     id,
@@ -323,12 +382,19 @@ export async function insertItem(
  * @returns {Promise<string|null>} Novo URI permanente persistido.
  */
 export async function updateItemImage(id, image_uri = null) {
-  const finalImageUri = await persistCapturedImage(image_uri);
   const db = await initDatabase();
+  const anterior = await db.getFirstAsync(
+    'SELECT image_uri FROM items WHERE id = ?;',
+    [id]
+  );
+  const finalImageUri = await persistCapturedImage(image_uri);
   await db.runAsync('UPDATE items SET image_uri = ? WHERE id = ?;', [
     finalImageUri,
     id,
   ]);
+  if (anterior?.image_uri && anterior.image_uri !== finalImageUri) {
+    await deletePersistedImageIfOwned(anterior.image_uri);
+  }
   return finalImageUri;
 }
 
@@ -434,7 +500,14 @@ export async function updateItemQuantity(id, newQuantity) {
  */
 export async function deleteItem(id) {
   const db = await initDatabase();
+  const anterior = await db.getFirstAsync(
+    'SELECT image_uri FROM items WHERE id = ?;',
+    [id]
+  );
   await db.runAsync('DELETE FROM items WHERE id = ?;', [id]);
+  if (anterior?.image_uri) {
+    await deletePersistedImageIfOwned(anterior.image_uri);
+  }
 }
 
 // Aliases em inglês e português para facilitar importação
