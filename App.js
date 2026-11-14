@@ -78,12 +78,21 @@ import {
 import { useTensorflowModel } from 'react-native-fast-tflite';
 import B2BStockHealthBanner from './components/B2BStockHealthBanner';
 import ExportButton from './components/ExportButton';
+import PhotoLightboxModal from './components/PhotoLightboxModal';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
+import { TOKENS } from './utils/designTokens';
 import {
   generateAndShareInventoryCSV,
   generateAndShareMovementsCSV,
 } from './utils/exportCsv';
 import { importInventoryFromCsvText } from './utils/importCsv';
+import {
+  sanitizeBarcodeInput,
+  sanitizeQuantityInput,
+  sanitizeTextInput,
+  validateCsvPayloadSize,
+} from './utils/securityValidators';
+import { buildYoloInputTensorFromBase64 } from './vision/imagePreprocessor';
 import {
   resolveYoloEngineStatus,
   runYoloInference,
@@ -134,47 +143,6 @@ function useKeyboardVisible() {
 
   return keyboardVisible;
 }
-
-/**
- * Design Tokens estritos do estilo 'true-black-flat' (design-taste-frontend):
- * - Elevação exclusivamente por degrau de luminosidade (#000000 -> #111111 -> #2a2a2a), sem bordas ou sombras em cards.
- * - Cor de destaque (--accent: #c6f24e) restrita às marcas de dados (quantidades, códigos lidos e métricas).
- * - Controles primários destacados por inversão: pílula branca (#ffffff) com texto preto (#000000).
- * - Navegação ativa marcada apenas pela transição de luminosidade (#b4b4b4 -> #ffffff).
- */
-const TOKENS = {
-  ground: '#000000',
-  surface: '#111111',
-  raised: '#2a2a2a',
-  border: '#1a1a1a',
-  rule: '#161616',
-  control: '#444444',
-  text: '#ffffff',
-  muted: '#b4b4b4',
-  faint: '#949494',
-  accent: '#c6f24e',
-  positive: '#c6f24e',
-  negative: '#e5484d',
-  warning: '#e5a93b',
-  pillPositiveBg: '#222a10',
-  pillPositiveInk: '#c6f24e',
-  pillNegativeBg: '#2c1a20',
-  pillNegativeInk: '#e5566f',
-  pillWarningBg: '#2b2414',
-  pillWarningInk: '#e5a93b',
-  pillNeutralBg: '#222222',
-  pillNeutralInk: '#ffffff',
-  radiusCard: 20,
-  radiusControl: 999,
-  gap: 14,
-  pad: 22,
-  controlHeight: 36,
-  fsTitle: 20,
-  fsSection: 16,
-  fsKpi: 24,
-  fsBody: 14,
-  fsSmall: 12,
-};
 
 const TEMA = {
   ...DarkTheme,
@@ -354,11 +322,11 @@ function ScannerScreen({ onInventoryUpdated }) {
     }, [])
   );
 
-  // Passo 1 (B2B): Leitura de Código de Barras prepara o formulário sem salvar automaticamente
+  // Passo 1 (B2B): Leitura de Código de Barras sanitizada prepara o formulário sem salvar automaticamente
   const handleBarcodeScanned = async ({ data }) => {
     if (!isBusiness) return;
 
-    const valorLido = String(data ?? '').trim();
+    const valorLido = sanitizeBarcodeInput(data);
     if (!valorLido) return;
 
     if (
@@ -393,7 +361,7 @@ function ScannerScreen({ onInventoryUpdated }) {
     }
   };
 
-  // Passo 1: Captura de fotografia nativa na CameraView + Inferência YOLO (sem abrir teclado ou salvar sozinho)
+  // Passo 1: Captura de fotografia nativa na CameraView + Pré-processamento de Tensor + Inferência YOLO
   const handleTirarFotoItem = async () => {
     if (aCapturarFoto || !cameraRef.current?.takePictureAsync) return;
 
@@ -401,22 +369,32 @@ function ScannerScreen({ onInventoryUpdated }) {
     try {
       const foto = await cameraRef.current.takePictureAsync({
         quality: 0.7,
+        base64: true,
       });
       if (foto?.uri) {
         setCapturedImage(foto.uri);
+        Vibration.vibrate(80);
+
         const modeloTflite =
           yoloPlugin.state === 'loaded' ? yoloPlugin.model : null;
+        const tensorBuffer = foto.base64
+          ? buildYoloInputTensorFromBase64(
+              foto.base64,
+              modeloTflite?.inputs?.[0]
+            )
+          : null;
+
         const resultadoYolo = await runYoloInference(
           {
             uri: foto.uri,
             width: foto.width,
             height: foto.height,
             userProfile,
+            tensorBuffer,
           },
           modeloTflite
         );
         setYoloDetections(resultadoYolo.detections);
-        Vibration.vibrate(80);
       }
     } catch (error) {
       console.error('Erro ao capturar foto do item:', error);
@@ -462,19 +440,23 @@ function ScannerScreen({ onInventoryUpdated }) {
 
   const nomeValido = nome.trim().length > 0;
 
-  // Passo 4: Único gatilho que efetivamente salva/atualiza o item no SQLite
+  // Passo 4: Único gatilho que efetivamente salva/atualiza o item no SQLite (com sanitização OWASP)
   const handleSalvar = async () => {
-    const nomeLimpo = nome.trim();
+    const nomeLimpo = sanitizeTextInput(nome, 60);
     if (!nomeLimpo || aGuardar) return;
 
-    const qtdParsed = parseInt(quantidade.replace(/[^0-9]/g, ''), 10);
-    const qtdFinal = Number.isFinite(qtdParsed) && qtdParsed > 0 ? qtdParsed : 1;
+    const qtdFinal = Math.max(1, sanitizeQuantityInput(quantidade, 1, 99999));
+    const barcodeSeguro = isBusiness
+      ? sanitizeBarcodeInput(currentBarcode) || null
+      : null;
 
     setAGuardar(true);
     try {
       if (isBusiness && matchedExistingItem) {
-        const novaQtdTotal =
-          Number(matchedExistingItem.quantity ?? 0) + qtdFinal;
+        const novaQtdTotal = Math.min(
+          99999,
+          Number(matchedExistingItem.quantity ?? 0) + qtdFinal
+        );
         await updateItemQuantity(
           matchedExistingItem.id,
           novaQtdTotal,
@@ -483,7 +465,7 @@ function ScannerScreen({ onInventoryUpdated }) {
         await updateItemDetails(matchedExistingItem.id, {
           name: nomeLimpo,
           space_id: espacoSelecionadoId,
-          barcode: currentBarcode,
+          barcode: barcodeSeguro,
           image_uri: capturedImage || matchedExistingItem.image_uri || null,
         });
       } else {
@@ -491,7 +473,7 @@ function ScannerScreen({ onInventoryUpdated }) {
           nomeLimpo,
           espacoSelecionadoId,
           qtdFinal,
-          isBusiness ? currentBarcode : null,
+          barcodeSeguro,
           capturedImage
         );
       }
@@ -1245,6 +1227,10 @@ function EspacosScreen() {
         onRefresh={carregarEspacos}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        initialNumToRender={10}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS === 'android'}
         contentContainerStyle={[
           styles.listContent,
           keyboardVisible && styles.scrollContentKeyboardActive,
@@ -1949,6 +1935,15 @@ function InventarioScreen({ refreshKey }) {
     const texto = csvImportText.trim();
     if (!texto || aImportarCsv) return;
 
+    const validacao = validateCsvPayloadSize(texto);
+    if (!validacao.valid) {
+      Alert.alert(
+        'Lote CSV excede o limite de segurança',
+        'Por segurança, envie lotes de até 512 KB ou 2.500 linhas por vez.'
+      );
+      return;
+    }
+
     setAImportarCsv(true);
     try {
       const stats = await importInventoryFromCsvText(
@@ -2238,6 +2233,10 @@ function InventarioScreen({ refreshKey }) {
         refreshing={aCarregar}
         onRefresh={() => carregarItens(searchQuery)}
         keyboardShouldPersistTaps="handled"
+        initialNumToRender={10}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS === 'android'}
         ListHeaderComponent={
           !isHome ? (
             <View>
@@ -3081,43 +3080,11 @@ export default function App() {
         </Tab.Navigator>
       </NavigationContainer>
 
-      {/* Lightbox Modal de Tela Cheia para inspeção visual de fotos sem corte */}
-      <Modal
-        visible={Boolean(lightboxImage)}
-        transparent
-        animationType="fade"
-        onRequestClose={closeLightbox}
-      >
-        <View style={styles.lightboxBackdrop}>
-          <View style={styles.lightboxTopBar}>
-            <Text style={styles.lightboxTitle} numberOfLines={1}>
-              {lightboxImage?.title || 'Visualização de Foto'}
-            </Text>
-            <TouchableOpacity
-              style={styles.secondaryPillButton}
-              activeOpacity={0.8}
-              onPress={closeLightbox}
-            >
-              <X size={15} color={TOKENS.text} strokeWidth={1.75} />
-              <Text style={styles.secondaryPillButtonText}>Fechar</Text>
-            </TouchableOpacity>
-          </View>
-
-          {lightboxImage?.uri ? (
-            <TouchableOpacity
-              style={styles.lightboxImageWrapper}
-              activeOpacity={1}
-              onPress={closeLightbox}
-            >
-              <Image
-                source={{ uri: lightboxImage.uri }}
-                style={styles.lightboxImage}
-                resizeMode="contain"
-              />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </Modal>
+      {/* Lightbox Modal modularizado e memoizado para inspeção de fotos sem corte */}
+      <PhotoLightboxModal
+        lightboxImage={lightboxImage}
+        onClose={closeLightbox}
+      />
     </ProfileContext.Provider>
   );
 }
