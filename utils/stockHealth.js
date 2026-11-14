@@ -26,11 +26,13 @@ export function computeStockHealthMetrics(items = [], spaces = []) {
 
     const rawQty = Number(item.quantity ?? 1);
     const qty = Number.isFinite(rawQty) ? Math.max(0, rawQty) : 0;
+    const rawMin = Number(item.min_quantity ?? 3);
+    const minQty = Number.isFinite(rawMin) && rawMin >= 0 ? rawMin : 3;
     totalUnits += qty;
 
     if (qty === 0) {
       outOfStockCount += 1;
-    } else if (qty <= 3) {
+    } else if (qty <= minQty) {
       lowStockCount += 1;
     } else {
       healthyCount += 1;
@@ -73,6 +75,9 @@ export function computeStockHealthMetrics(items = [], spaces = []) {
   };
 }
 
+export const computeB2BStockHealth = computeStockHealthMetrics;
+
 export default {
   computeStockHealthMetrics,
+  computeB2BStockHealth,
 };

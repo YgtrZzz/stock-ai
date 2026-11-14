@@ -162,6 +162,7 @@ export async function initDatabase() {
           name TEXT NOT NULL,
           space_id INTEGER REFERENCES spaces(id) ON DELETE SET NULL,
           quantity INTEGER DEFAULT 1,
+          min_quantity INTEGER NOT NULL DEFAULT 3,
           barcode TEXT,
           image_uri TEXT,
           created_at TEXT NOT NULL
@@ -202,6 +203,11 @@ export async function initDatabase() {
       }
       if (!nomesColunas.has('image_uri')) {
         await db.execAsync('ALTER TABLE items ADD COLUMN image_uri TEXT;');
+      }
+      if (!nomesColunas.has('min_quantity')) {
+        await db.execAsync(
+          'ALTER TABLE items ADD COLUMN min_quantity INTEGER NOT NULL DEFAULT 3;'
+        );
       }
 
       await db.execAsync(`
@@ -586,6 +592,7 @@ export async function getItems(searchQuery = '') {
         items.name,
         items.space_id,
         COALESCE(items.quantity, 1) AS quantity,
+        COALESCE(items.min_quantity, 3) AS min_quantity,
         items.barcode,
         items.image_uri,
         spaces.name AS space_name,
@@ -607,6 +614,7 @@ export async function getItems(searchQuery = '') {
       items.name,
       items.space_id,
       COALESCE(items.quantity, 1) AS quantity,
+      COALESCE(items.min_quantity, 3) AS min_quantity,
       items.barcode,
       items.image_uri,
       spaces.name AS space_name,
@@ -787,13 +795,13 @@ export async function updateItemQuantity(id, newQuantity, reason = null) {
  */
 export async function updateItemDetails(
   id,
-  { name, space_id, barcode, image_uri } = {}
+  { name, space_id, barcode, image_uri, min_quantity } = {}
 ) {
   const nome = limparNome(name);
   const db = await initDatabase();
 
   const anterior = await db.getFirstAsync(
-    'SELECT id, name, space_id, COALESCE(quantity, 1) AS quantity, barcode, image_uri FROM items WHERE id = ?;',
+    'SELECT id, name, space_id, COALESCE(quantity, 1) AS quantity, COALESCE(min_quantity, 3) AS min_quantity, barcode, image_uri FROM items WHERE id = ?;',
     [id]
   );
 
@@ -808,14 +816,22 @@ export async function updateItemDetails(
       ? anterior.barcode
       : String(barcode ?? '').trim() || null;
 
+  const parsedMin = parseInt(min_quantity, 10);
+  const nextMinQuantity =
+    min_quantity === undefined
+      ? Number(anterior.min_quantity ?? 3)
+      : Number.isFinite(parsedMin)
+        ? Math.max(0, Math.min(99999, parsedMin))
+        : 3;
+
   const nextImageUri =
     image_uri === undefined
       ? anterior.image_uri
       : await persistCapturedImage(image_uri);
 
   await db.runAsync(
-    'UPDATE items SET name = ?, space_id = ?, barcode = ?, image_uri = ? WHERE id = ?;',
-    [nome, nextSpaceId, nextBarcode, nextImageUri, id]
+    'UPDATE items SET name = ?, space_id = ?, barcode = ?, image_uri = ?, min_quantity = ? WHERE id = ?;',
+    [nome, nextSpaceId, nextBarcode, nextImageUri, nextMinQuantity, id]
   );
 
   if (
