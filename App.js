@@ -84,6 +84,7 @@ import B2BBackupRestoreCard from './components/B2BBackupRestoreCard';
 import B2BStockHealthBanner from './components/B2BStockHealthBanner';
 import CsvBulkImportCard from './components/CsvBulkImportCard';
 import ExportButton from './components/ExportButton';
+import ForecastPurchasingCard from './components/ForecastPurchasingCard';
 import PhotoLightboxModal from './components/PhotoLightboxModal';
 import QuantityStepperControl from './components/QuantityStepperControl';
 import ScannedBarcodeBanner from './components/ScannedBarcodeBanner';
@@ -103,6 +104,7 @@ import { TOKENS } from './utils/designTokens';
 import {
   generateAndShareInventoryCSV,
   generateAndShareMovementsCSV,
+  generateAndSharePurchasingForecastCSV,
 } from './utils/exportCsv';
 import { importInventoryFromCsvText } from './utils/importCsv';
 import {
@@ -1619,6 +1621,7 @@ function InventarioScreen({ refreshKey }) {
   const [aCarregar, setACarregar] = useState(false);
   const [aExportar, setAExportar] = useState(false);
   const [aExportarAuditoria, setAExportarAuditoria] = useState(false);
+  const [aExportarPrevisao, setAExportarPrevisao] = useState(false);
   const [aExportarBackup, setAExportarBackup] = useState(false);
   const [aRestaurarBackup, setARestaurarBackup] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
@@ -1687,6 +1690,25 @@ function InventarioScreen({ refreshKey }) {
       setAExportarAuditoria(false);
     }
   }, [aExportarAuditoria, stockMovements]);
+
+  const handleExportarPrevisaoCsv = useCallback(
+    async (forecastList) => {
+      if (aExportarPrevisao) return;
+      setAExportarPrevisao(true);
+      try {
+        await generateAndSharePurchasingForecastCSV(forecastList, spaces);
+      } catch (error) {
+        console.error('Erro ao exportar previsão de compras:', error);
+        Alert.alert(
+          'Erro na exportação',
+          'Não foi possível exportar o relatório de compras.'
+        );
+      } finally {
+        setAExportarPrevisao(false);
+      }
+    },
+    [aExportarPrevisao, spaces]
+  );
 
   const handleExportarBackupJson = useCallback(async () => {
     if (aExportarBackup) return;
@@ -2164,6 +2186,15 @@ function InventarioScreen({ refreshKey }) {
                 activeFilter={stockFilter}
                 onSelectFilter={setStockFilter}
               />
+
+              <ForecastPurchasingCard
+                items={items}
+                movements={stockMovements}
+                spaces={spaces}
+                exporting={aExportarPrevisao}
+                onExportForecast={handleExportarPrevisaoCsv}
+              />
+
               <ExportButton
                 items={items}
                 spaces={spaces}

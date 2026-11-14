@@ -21,6 +21,19 @@ export const MOVEMENTS_CSV_HEADERS = [
   'Data/Hora',
 ];
 
+export const FORECAST_CSV_HEADERS = [
+  'ID',
+  'Código de Barras',
+  'Produto',
+  'Estoque Atual',
+  'Consumo Diário',
+  'Dias Restantes',
+  'Status de Urgência',
+  'Sugestão de Compra (15d)',
+  'Curva ABC',
+  'Espaço',
+];
+
 let defaultFileSystemModule = null;
 let defaultSharingModule = null;
 
