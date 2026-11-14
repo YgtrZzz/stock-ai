@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Building2, ChevronRight, Home } from 'lucide-react-native';
 import { TOKENS } from '../utils/designTokens';
 
@@ -15,6 +16,10 @@ import { TOKENS } from '../utils/designTokens';
  * ('home' vs 'business'), seguindo estritamente os tokens 'true-black-flat' e estética shadcn/ui.
  */
 function OnboardingScreen({ onSelectProfile }) {
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets?.bottom ?? 0, 0);
+  const topInset = Math.max(insets?.top ?? 0, 0);
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(12)).current;
 
@@ -35,7 +40,15 @@ function OnboardingScreen({ onSelectProfile }) {
   }, [fadeAnim, slideAnim]);
 
   return (
-    <View style={styles.onboardingScreen}>
+    <View
+      style={[
+        styles.onboardingScreen,
+        {
+          paddingTop: topInset + 16,
+          paddingBottom: bottomInset + 16,
+        },
+      ]}
+    >
       <StatusBar style="light" />
       <Animated.View
         style={[

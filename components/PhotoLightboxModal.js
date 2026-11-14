@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
 import { TOKENS } from '../utils/designTokens';
 
@@ -16,6 +17,7 @@ import { TOKENS } from '../utils/designTokens';
  * Suporta transição suave de fade a 60 FPS com useNativeDriver: true e frame de foto 1px #27272a.
  */
 function PhotoLightboxModal({ lightboxImage, onClose }) {
+  const insets = useSafeAreaInsets();
   const isVisible = Boolean(lightboxImage?.uri);
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
@@ -37,7 +39,15 @@ function PhotoLightboxModal({ lightboxImage, onClose }) {
       animationType="fade"
       onRequestClose={onClose}
     >
-      <View style={styles.lightboxBackdrop}>
+      <View
+        style={[
+          styles.lightboxBackdrop,
+          {
+            paddingTop: Math.max(insets?.top ?? 0, 48),
+            paddingBottom: Math.max(insets?.bottom ?? 0, 32),
+          },
+        ]}
+      >
         <View style={styles.lightboxTopBar}>
           <Text style={styles.lightboxTitle} numberOfLines={1}>
             {lightboxImage?.title || 'Visualização de Foto'}

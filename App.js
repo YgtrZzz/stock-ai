@@ -18,6 +18,10 @@ import {
 } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import {
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import {
   ActivityIndicator,
   Alert,
   FlatList,
@@ -2962,12 +2966,21 @@ export default function App() {
     );
   }
 
-  // Se não houver perfil salvo no AsyncStorage, exibe a Tela de Onboarding
-  if (!userProfile) {
-    return <OnboardingScreen onSelectProfile={selectProfile} />;
-  }
-
+function MainNavigator({
+  userProfile,
+  selectProfile,
+  resetProfile,
+  openLightbox,
+  inventoryRefreshKey,
+  handleInventoryUpdated,
+}) {
+  const insets = useSafeAreaInsets();
   const isHome = userProfile === 'home';
+
+  // Garante padding seguro para barras de navegação virtuais/flutuantes do Android (ex: Samsung Galaxy S8)
+  // Quando há botões de navegação virtuais (abas, início e voltar), insets.bottom é ~48dp no S8,
+  // elevando a barra de abas e os ícones para que fiquem 100% visíveis e desobstruídos.
+  const bottomInset = Math.max(insets?.bottom ?? 0, 0);
 
   return (
     <ProfileContext.Provider
@@ -3022,9 +3035,9 @@ export default function App() {
               backgroundColor: '#09090b',
               borderTopWidth: 1,
               borderTopColor: '#27272a',
-              height: 60,
+              height: 56 + bottomInset,
               paddingTop: 6,
-              paddingBottom: 8,
+              paddingBottom: bottomInset > 0 ? bottomInset : 6,
               elevation: 0,
             },
           }}
@@ -3065,13 +3078,107 @@ export default function App() {
           </Tab.Screen>
         </Tab.Navigator>
       </NavigationContainer>
+    </ProfileContext.Provider>
+  );
+}
+
+export default function App() {
+  const [userProfile, setUserProfile] = useState(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [inventoryRefreshKey, setInventoryRefreshKey] = useState(0);
+  const [lightboxImage, setLightboxImage] = useState(null);
+
+  const handleInventoryUpdated = useCallback(() => {
+    setInventoryRefreshKey((prev) => prev + 1);
+  }, []);
+
+  const openLightbox = useCallback((uri, title = '') => {
+    if (uri) {
+      setLightboxImage({ uri, title });
+    }
+  }, []);
+
+  const closeLightbox = useCallback(() => {
+    setLightboxImage(null);
+  }, []);
+
+  useEffect(() => {
+    let ativo = true;
+    async function inicializarApp() {
+      try {
+        const [, savedProfile] = await Promise.all([
+          initDatabase(),
+          AsyncStorage.getItem(STORAGE_KEY_PROFILE),
+        ]);
+
+        if (!ativo) return;
+        if (savedProfile === 'home' || savedProfile === 'business') {
+          setUserProfile(savedProfile);
+        }
+        // Backfill assíncrono em background após liberar a UI inicial (evita travar troca de abas)
+        setTimeout(() => {
+          backfillVisualSignatures(computeVisualSignature).catch(() => {});
+        }, 400);
+      } catch (error) {
+        console.error('Erro na inicialização do aplicativo:', error);
+      } finally {
+        if (ativo) {
+          setLoadingProfile(false);
+        }
+      }
+    }
+
+    inicializarApp();
+    return () => {
+      ativo = false;
+    };
+  }, []);
+
+  const selectProfile = useCallback(async (perfil) => {
+    await AsyncStorage.setItem(STORAGE_KEY_PROFILE, perfil);
+    setUserProfile(perfil);
+  }, []);
+
+  const resetProfile = useCallback(async () => {
+    await AsyncStorage.removeItem(STORAGE_KEY_PROFILE);
+    setUserProfile(null);
+  }, []);
+
+  if (loadingProfile) {
+    return (
+      <View style={styles.loadingScreen}>
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color={TOKENS.text} />
+      </View>
+    );
+  }
+
+  // Se não houver perfil salvo no AsyncStorage, exibe a Tela de Onboarding
+  if (!userProfile) {
+    return (
+      <SafeAreaProvider>
+        <OnboardingScreen onSelectProfile={selectProfile} />
+      </SafeAreaProvider>
+    );
+  }
+
+  return (
+    <SafeAreaProvider>
+      <MainNavigator
+        userProfile={userProfile}
+        selectProfile={selectProfile}
+        resetProfile={resetProfile}
+        openLightbox={openLightbox}
+        inventoryRefreshKey={inventoryRefreshKey}
+        handleInventoryUpdated={handleInventoryUpdated}
+      />
 
       {/* Lightbox Modal modularizado e memoizado para inspeção de fotos sem corte */}
       <PhotoLightboxModal
         lightboxImage={lightboxImage}
         onClose={closeLightbox}
       />
-    </ProfileContext.Provider>
+    </SafeAreaProvider>
   );
 }
 
