@@ -1,4 +1,5 @@
 export const CSV_FILENAME = 'Relatorio_Estoque.csv';
+export const MOVEMENTS_CSV_FILENAME = 'Relatorio_Movimentacoes.csv';
 
 export const CSV_HEADERS = [
   'ID',
@@ -6,6 +7,17 @@ export const CSV_HEADERS = [
   'Nome do Produto',
   'Quantidade',
   'Espaço',
+];
+
+export const MOVEMENTS_CSV_HEADERS = [
+  'ID',
+  'Produto',
+  'Código de Barras',
+  'Variação',
+  'Saldo Anterior',
+  'Novo Saldo',
+  'Motivo',
+  'Data/Hora',
 ];
 
 let defaultFileSystemModule = null;
@@ -160,5 +172,92 @@ export async function generateAndShareInventoryCSV(
     fileUri,
     csvContent,
     rowCount: Array.isArray(items) ? items.length : 0,
+  };
+}
+
+/**
+ * Gera a string CSV do histórico de movimentações de estoque (Audit Log B2B).
+ */
+export function buildMovementsCsvContent(movements = []) {
+  const safeMovements = Array.isArray(movements) ? movements : [];
+  const headerLine = MOVEMENTS_CSV_HEADERS.map(escapeCsvCell).join(',');
+  const rows = [headerLine];
+
+  for (const mov of safeMovements) {
+    if (!mov || typeof mov !== 'object') continue;
+
+    const deltaValue = Number.isFinite(Number(mov.delta))
+      ? Number(mov.delta)
+      : 0;
+    const prevValue = Number.isFinite(Number(mov.previous_qty))
+      ? Number(mov.previous_qty)
+      : 0;
+    const nextValue = Number.isFinite(Number(mov.new_qty))
+      ? Number(mov.new_qty)
+      : 0;
+
+    rows.push(
+      [
+        escapeCsvCell(mov.id ?? ''),
+        escapeCsvCell(mov.item_name ?? ''),
+        escapeCsvCell(mov.barcode ?? ''),
+        String(deltaValue),
+        String(prevValue),
+        String(nextValue),
+        escapeCsvCell(mov.reason ?? ''),
+        escapeCsvCell(mov.created_at ?? ''),
+      ].join(',')
+    );
+  }
+
+  return `${rows.join('\n')}\n`;
+}
+
+/**
+ * Gera o arquivo Relatorio_Movimentacoes.csv e compartilha via expo-sharing.
+ */
+export async function generateAndShareMovementsCSV(
+  movements = [],
+  adapters = {}
+) {
+  const FileSystem = await getFileSystemAdapter(adapters.fileSystem);
+  const Sharing = await getSharingAdapter(adapters.sharing);
+
+  const csvContent = buildMovementsCsvContent(movements);
+
+  const baseDir =
+    FileSystem.cacheDirectory || FileSystem.documentDirectory || '';
+  if (!baseDir) {
+    throw new Error(
+      'Diretório temporário indisponível para salvar o relatório de movimentações.'
+    );
+  }
+
+  const normalizedDir = baseDir.endsWith('/') ? baseDir : `${baseDir}/`;
+  const fileUri = `${normalizedDir}${MOVEMENTS_CSV_FILENAME}`;
+
+  await FileSystem.writeAsStringAsync(fileUri, csvContent, {
+    encoding: FileSystem.EncodingType?.UTF8 || 'utf8',
+  });
+
+  if (typeof Sharing.isAvailableAsync === 'function') {
+    const disponivel = await Sharing.isAvailableAsync();
+    if (!disponivel) {
+      throw new Error(
+        'O compartilhamento nativo não está disponível neste dispositivo.'
+      );
+    }
+  }
+
+  await Sharing.shareAsync(fileUri, {
+    mimeType: 'text/csv',
+    dialogTitle: 'Exportar Relatório de Movimentações (CSV)',
+    UTI: 'public.comma-separated-values-text',
+  });
+
+  return {
+    fileUri,
+    csvContent,
+    rowCount: Array.isArray(movements) ? movements.length : 0,
   };
 }

@@ -7,6 +7,7 @@ import {
   escapeCsvCell,
   buildInventoryCsvContent,
   generateAndShareInventoryCSV,
+  generateAndShareMovementsCSV,
 } from '../utils/exportCsv.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -172,10 +173,71 @@ test('CSV Export Engine & B2B ExportButton Integration (TDD)', async (t) => {
 
       assert.match(
         appSource,
-        /import\s+\{\s*generateAndShareInventoryCSV\s*\}\s+from\s+['"]\.\/utils\/exportCsv['"]/
+        /import\s+\{[^}]*generateAndShareInventoryCSV[^}]*\}\s+from\s+['"]\.\/utils\/exportCsv['"]/
       );
       assert.match(appSource, /generateAndShareInventoryCSV\(\s*items\s*,\s*spaces\s*\)/);
       assert.match(appSource, /ListHeaderComponent=\{\s*!isHome\s*\?\s*\(\s*(?:<View>\s*)?<ExportButton/);
+    }
+  );
+
+  await t.test(
+    'generateAndShareMovementsCSV exports audit trail to Relatorio_Movimentacoes.csv with OWASP protection',
+    async () => {
+      assert.equal(typeof generateAndShareMovementsCSV, 'function');
+
+      const writtenFiles = [];
+      const shareCalls = [];
+
+      const mockFileSystem = {
+        cacheDirectory: 'file:///data/user/0/host.exp.exponent/cache/',
+        EncodingType: { UTF8: 'utf8' },
+        async writeAsStringAsync(uri, content) {
+          writtenFiles.push({ uri, content });
+        },
+      };
+
+      const mockSharing = {
+        async isAvailableAsync() {
+          return true;
+        },
+        async shareAsync(uri, options) {
+          shareCalls.push({ uri, options });
+        },
+      };
+
+      const movements = [
+        {
+          id: 9,
+          item_name: 'Roteador Wi-Fi 6 Gigabit Pro',
+          barcode: '7893216549870',
+          delta: 0,
+          previous_qty: 6,
+          new_qty: 6,
+          reason: 'transferencia_local',
+          created_at: '2026-11-13T20:15:00.000Z',
+        },
+      ];
+
+      const result = await generateAndShareMovementsCSV(movements, {
+        fileSystem: mockFileSystem,
+        sharing: mockSharing,
+      });
+
+      assert.equal(writtenFiles.length, 1);
+      assert.equal(
+        writtenFiles[0].uri,
+        'file:///data/user/0/host.exp.exponent/cache/Relatorio_Movimentacoes.csv'
+      );
+      assert.match(
+        writtenFiles[0].content,
+        /^ID,Produto,Código de Barras,Variação,Saldo Anterior,Novo Saldo,Motivo,Data\/Hora\n/
+      );
+      assert.match(
+        writtenFiles[0].content,
+        /9,Roteador Wi-Fi 6 Gigabit Pro,7893216549870,0,6,6,transferencia_local,2026-11-13T20:15:00\.000Z/
+      );
+      assert.equal(shareCalls.length, 1);
+      assert.equal(result.rowCount, 1);
     }
   );
 });

@@ -112,5 +112,17 @@ describe('B2B CSV Bulk Import Parser & Sanitizer (TDD)', () => {
       appSource.includes('showAuditLogPanel'),
       'App.js must render the collapsible B2B Audit Log panel'
     );
+    assert.ok(
+      appSource.includes('updateItemDetails'),
+      'App.js must import and connect updateItemDetails for inline item/space transfer'
+    );
+    assert.ok(
+      appSource.includes('generateAndShareMovementsCSV'),
+      'App.js must import and connect generateAndShareMovementsCSV for Audit Log CSV export'
+    );
+    assert.ok(
+      appSource.includes('editingItemId'),
+      'App.js must support inline item editing and space transfer in InventarioScreen'
+    );
   });
 });

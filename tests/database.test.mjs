@@ -409,4 +409,44 @@ describe('Database & Permanent Image Storage (TDD - Task 1)', () => {
     assert.equal(movements[2].delta, 10);
     assert.equal(movements[2].reason, 'cadastro_inicial');
   });
+
+  it('updates item name and transfers space_id via updateItemDetails while recording transferencia_local in stock_movements', async () => {
+    await dbModule.initDatabase();
+
+    assert.equal(
+      typeof dbModule.updateItemDetails,
+      'function',
+      'updateItemDetails must be exported'
+    );
+
+    const setorRecebimento = await dbModule.addSpace('Doca de Recebimento');
+    const setorExpedicao = await dbModule.addSpace('Setor de Expedição');
+
+    const item = await dbModule.insertItem(
+      'Roteador Wi-Fi 6 Empresarial',
+      setorRecebimento.id,
+      6,
+      '7893216549870',
+      'file:///app/cache/Camera/router.jpg'
+    );
+
+    const updated = await dbModule.updateItemDetails(item.id, {
+      name: 'Roteador Wi-Fi 6 Gigabit Pro',
+      space_id: setorExpedicao.id,
+    });
+
+    assert.equal(updated.name, 'Roteador Wi-Fi 6 Gigabit Pro');
+    assert.equal(updated.space_id, setorExpedicao.id);
+    assert.equal(updated.image_uri, item.image_uri);
+
+    const list = await dbModule.getItems('Roteador Wi-Fi 6 Gigabit Pro');
+    assert.equal(list.length, 1);
+    assert.equal(list[0].space_name, 'Setor de Expedição');
+
+    const movements = await dbModule.getStockMovements(5);
+    assert.equal(movements[0].reason, 'transferencia_local');
+    assert.equal(movements[0].delta, 0);
+    assert.equal(movements[0].previous_qty, 6);
+    assert.equal(movements[0].new_qty, 6);
+  });
 });

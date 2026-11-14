@@ -240,7 +240,11 @@ async function recordStockMovement(
   const prev = Number.isFinite(Number(previous_qty)) ? Number(previous_qty) : 0;
   const next = Number.isFinite(Number(new_qty)) ? Number(new_qty) : 0;
   const delta = next - prev;
-  if (delta === 0 && reason !== 'cadastro_inicial') {
+  if (
+    delta === 0 &&
+    reason !== 'cadastro_inicial' &&
+    reason !== 'transferencia_local'
+  ) {
     return;
   }
 
@@ -666,6 +670,63 @@ export async function updateItemQuantity(id, newQuantity, reason = null) {
 }
 
 /**
+ * Edita o nome, código de barras e/ou transfere a localização (space_id) de um item existente,
+ * registrando 'transferencia_local' no Audit Log quando o espaço for alterado.
+ *
+ * @param {number} id ID do item a ser atualizado.
+ * @param {{ name: string, space_id?: number|null, barcode?: string|null }} payload
+ * @returns {Promise<{ id: number, name: string, space_id: number|null, quantity: number, barcode: string|null, image_uri: string|null }>}
+ */
+export async function updateItemDetails(
+  id,
+  { name, space_id, barcode } = {}
+) {
+  const nome = limparNome(name);
+  const db = await initDatabase();
+
+  const anterior = await db.getFirstAsync(
+    'SELECT id, name, space_id, COALESCE(quantity, 1) AS quantity, barcode, image_uri FROM items WHERE id = ?;',
+    [id]
+  );
+
+  if (!anterior) {
+    throw new Error('Item não encontrado.');
+  }
+
+  const nextSpaceId =
+    space_id === undefined ? anterior.space_id : (space_id ?? null);
+  const nextBarcode =
+    barcode === undefined
+      ? anterior.barcode
+      : String(barcode ?? '').trim() || null;
+
+  await db.runAsync(
+    'UPDATE items SET name = ?, space_id = ?, barcode = ? WHERE id = ?;',
+    [nome, nextSpaceId, nextBarcode, id]
+  );
+
+  if (nextSpaceId !== anterior.space_id) {
+    await recordStockMovement(db, {
+      item_id: anterior.id,
+      item_name: nome,
+      barcode: nextBarcode,
+      previous_qty: anterior.quantity,
+      new_qty: anterior.quantity,
+      reason: 'transferencia_local',
+    });
+  }
+
+  return {
+    id: anterior.id,
+    name: nome,
+    space_id: nextSpaceId,
+    quantity: anterior.quantity,
+    barcode: nextBarcode,
+    image_uri: anterior.image_uri,
+  };
+}
+
+/**
  * Retorna o histórico recente de movimentações de estoque (Audit Log B2B),
  * ordenado da movimentação mais recente para a mais antiga.
  *
@@ -735,6 +796,7 @@ export default {
   getItems,
   bulkUpsertItemsFromCatalog,
   updateItemQuantity,
+  updateItemDetails,
   getStockMovements,
   deleteItem,
   deletePersistedImageIfOwned,

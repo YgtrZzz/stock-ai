@@ -68,13 +68,17 @@ import {
   getItems,
   bulkUpsertItemsFromCatalog,
   updateItemQuantity,
+  updateItemDetails,
   getStockMovements,
   deleteItem,
 } from './database';
 import { useTensorflowModel } from 'react-native-fast-tflite';
 import ExportButton from './components/ExportButton';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
-import { generateAndShareInventoryCSV } from './utils/exportCsv';
+import {
+  generateAndShareInventoryCSV,
+  generateAndShareMovementsCSV,
+} from './utils/exportCsv';
 import { importInventoryFromCsvText } from './utils/importCsv';
 import {
   resolveYoloEngineStatus,
@@ -1381,6 +1385,11 @@ function InventarioScreen({ refreshKey }) {
   const [aImportarCsv, setAImportarCsv] = useState(false);
   const [aCarregar, setACarregar] = useState(false);
   const [aExportar, setAExportar] = useState(false);
+  const [aExportarAuditoria, setAExportarAuditoria] = useState(false);
+  const [editingItemId, setEditingItemId] = useState(null);
+  const [editingItemName, setEditingItemName] = useState('');
+  const [editingItemSpaceId, setEditingItemSpaceId] = useState(null);
+  const [aSalvarEdicaoItem, setASalvarEdicaoItem] = useState(false);
   const [failedImageIds, setFailedImageIds] = useState({});
 
   const handleImageError = useCallback((itemId) => {
@@ -1422,6 +1431,64 @@ function InventarioScreen({ refreshKey }) {
       setAExportar(false);
     }
   }, [aExportar, items, spaces]);
+
+  const handleExportarMovimentacoesCsv = useCallback(async () => {
+    if (aExportarAuditoria || stockMovements.length === 0) return;
+    setAExportarAuditoria(true);
+    try {
+      await generateAndShareMovementsCSV(stockMovements);
+    } catch (error) {
+      console.error('Erro ao exportar auditoria CSV:', error);
+      Alert.alert(
+        'Erro na exportação',
+        'Não foi possível exportar o histórico de movimentações.'
+      );
+    } finally {
+      setAExportarAuditoria(false);
+    }
+  }, [aExportarAuditoria, stockMovements]);
+
+  const handleIniciarEdicaoItem = useCallback((item) => {
+    setEditingItemId(item.id);
+    setEditingItemName(String(item.name ?? ''));
+    setEditingItemSpaceId(item.space_id ?? null);
+  }, []);
+
+  const handleCancelarEdicaoItem = useCallback(() => {
+    setEditingItemId(null);
+    setEditingItemName('');
+    setEditingItemSpaceId(null);
+  }, []);
+
+  const handleSalvarEdicaoItem = useCallback(
+    async (item) => {
+      const nomeLimpo = editingItemName.trim();
+      if (!nomeLimpo || aSalvarEdicaoItem) return;
+
+      setASalvarEdicaoItem(true);
+      try {
+        await updateItemDetails(item.id, {
+          name: nomeLimpo,
+          space_id: editingItemSpaceId,
+        });
+        setEditingItemId(null);
+        Keyboard.dismiss();
+        await carregarItens(searchQuery);
+      } catch (error) {
+        console.error('Erro ao atualizar item:', error);
+        Alert.alert('Erro', 'Não foi possível salvar as alterações do item.');
+      } finally {
+        setASalvarEdicaoItem(false);
+      }
+    },
+    [
+      aSalvarEdicaoItem,
+      carregarItens,
+      editingItemName,
+      editingItemSpaceId,
+      searchQuery,
+    ]
+  );
 
   const handleImportarLoteCsv = useCallback(async () => {
     const texto = csvImportText.trim();
@@ -1864,9 +1931,11 @@ function InventarioScreen({ refreshKey }) {
                             ? 'Cadastro'
                             : mov.reason === 'sincronizacao_csv'
                               ? 'Lote CSV'
-                              : isPositive
-                                ? 'Entrada'
-                                : 'Baixa';
+                              : mov.reason === 'transferencia_local'
+                                ? 'Transferência'
+                                : isPositive
+                                  ? 'Entrada'
+                                  : 'Baixa';
 
                         return (
                           <View key={String(mov.id)} style={styles.auditLogRow}>
@@ -1906,6 +1975,29 @@ function InventarioScreen({ refreshKey }) {
                           </View>
                         );
                       })
+                    )}
+
+                    {stockMovements.length > 0 && (
+                      <TouchableOpacity
+                        style={[
+                          styles.primaryInvertedPill,
+                          aExportarAuditoria && styles.controlDisabled,
+                        ]}
+                        activeOpacity={0.85}
+                        onPress={handleExportarMovimentacoesCsv}
+                        disabled={aExportarAuditoria}
+                      >
+                        {aExportarAuditoria ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={TOKENS.ground}
+                          />
+                        ) : (
+                          <Text style={styles.primaryInvertedPillText}>
+                            Exportar Auditoria CSV ({stockMovements.length})
+                          </Text>
+                        )}
+                      </TouchableOpacity>
                     )}
                   </View>
                 )}
@@ -1976,7 +2068,15 @@ function InventarioScreen({ refreshKey }) {
                     </Text>
 
                     <View style={styles.metaPillsRow}>
-                      <View style={styles.locationPill}>
+                      <TouchableOpacity
+                        style={styles.locationPill}
+                        activeOpacity={0.75}
+                        onPress={() =>
+                          editingItemId === item.id
+                            ? handleCancelarEdicaoItem()
+                            : handleIniciarEdicaoItem(item)
+                        }
+                      >
                         <MapPin
                           size={12}
                           color={TOKENS.muted}
@@ -1985,7 +2085,12 @@ function InventarioScreen({ refreshKey }) {
                         <Text style={styles.locationPillText} numberOfLines={1}>
                           {nomeLocal}
                         </Text>
-                      </View>
+                        <ChevronRight
+                          size={12}
+                          color={TOKENS.faint}
+                          strokeWidth={1.5}
+                        />
+                      </TouchableOpacity>
 
                       {item.barcode ? (
                         <View style={styles.barcodeMetaPill}>
@@ -2040,6 +2145,98 @@ function InventarioScreen({ refreshKey }) {
                     </Text>
                   </View>
                 </View>
+
+                {/* Editor Inline Rápido: Renomear Produto ou Transferir de Setor/Galpão */}
+                {editingItemId === item.id && (
+                  <View style={styles.inlineEditItemPanel}>
+                    <Text style={styles.inlineEditLabel}>
+                      Editar nome ou transferir de local
+                    </Text>
+                    <TextInput
+                      style={styles.input}
+                      value={editingItemName}
+                      onChangeText={setEditingItemName}
+                      placeholder="Nome do item"
+                      placeholderTextColor={TOKENS.faint}
+                    />
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.chipsList}
+                    >
+                      <TouchableOpacity
+                        style={[
+                          styles.chip,
+                          editingItemSpaceId === null && styles.chipActive,
+                        ]}
+                        activeOpacity={0.8}
+                        onPress={() => setEditingItemSpaceId(null)}
+                      >
+                        <Text
+                          style={[
+                            styles.chipText,
+                            editingItemSpaceId === null &&
+                              styles.chipTextActive,
+                          ]}
+                        >
+                          Sem local
+                        </Text>
+                      </TouchableOpacity>
+
+                      {spaces.map((sp) => {
+                        const ativo = editingItemSpaceId === sp.id;
+                        return (
+                          <TouchableOpacity
+                            key={String(sp.id)}
+                            style={[styles.chip, ativo && styles.chipActive]}
+                            activeOpacity={0.8}
+                            onPress={() => setEditingItemSpaceId(sp.id)}
+                          >
+                            <Text
+                              style={[
+                                styles.chipText,
+                                ativo && styles.chipTextActive,
+                              ]}
+                            >
+                              {sp.name}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+
+                    <View style={styles.inlineEditActionsRow}>
+                      <TouchableOpacity
+                        style={styles.actionPillButton}
+                        activeOpacity={0.8}
+                        onPress={handleCancelarEdicaoItem}
+                      >
+                        <X size={14} color={TOKENS.text} strokeWidth={1.5} />
+                        <Text style={styles.actionPillText}>Cancelar</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.actionPillButtonPrimary,
+                          (!editingItemName.trim() || aSalvarEdicaoItem) &&
+                            styles.controlDisabled,
+                        ]}
+                        activeOpacity={0.85}
+                        onPress={() => handleSalvarEdicaoItem(item)}
+                        disabled={!editingItemName.trim() || aSalvarEdicaoItem}
+                      >
+                        <Check
+                          size={14}
+                          color={TOKENS.ground}
+                          strokeWidth={2}
+                        />
+                        <Text style={styles.actionPillTextPrimary}>
+                          {aSalvarEdicaoItem ? 'Salvando...' : 'Salvar e Mover'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
 
                 {/* Painel de Ações Rápidas (Giro de Estoque com ícones vetoriais Lucide) */}
                 <View style={styles.actionPanel}>
@@ -3221,6 +3418,25 @@ const styles = StyleSheet.create({
   },
   quantityPillValueWarning: {
     color: TOKENS.pillWarningInk,
+  },
+  inlineEditItemPanel: {
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: TOKENS.rule,
+    gap: 8,
+  },
+  inlineEditLabel: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  inlineEditActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 4,
   },
 
   // Painel de Ações Rápidas (Separado por hairline 1px #161616)
