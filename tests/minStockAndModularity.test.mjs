@@ -36,10 +36,13 @@ describe('Cycle 9 — Custom Per-SKU Minimum Stock Thresholds (min_quantity) & C
       dbSource.includes('min_quantity'),
       'database.js must include non-destructive migration and persistence for min_quantity'
     );
+    const codeWithoutComments = dbSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
     assert.equal(
-      /DROP\s+TABLE/i.test(dbSource),
+      /DROP\s+TABLE/i.test(codeWithoutComments),
       false,
-      'database.js must never use DROP TABLE'
+      'database.js must never execute DROP TABLE'
     );
   });
 

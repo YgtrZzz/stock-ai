@@ -77,12 +77,15 @@ import {
   deleteItem,
 } from './database';
 import { useTensorflowModel } from 'react-native-fast-tflite';
+import AuditHistoryCard from './components/AuditHistoryCard';
 import B2BBackupRestoreCard from './components/B2BBackupRestoreCard';
 import B2BStockHealthBanner from './components/B2BStockHealthBanner';
+import CsvBulkImportCard from './components/CsvBulkImportCard';
 import ExportButton from './components/ExportButton';
 import PhotoLightboxModal from './components/PhotoLightboxModal';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
 import { ProfileContext } from './context/ProfileContext';
+import { useKeyboardVisible } from './hooks/useKeyboardVisible';
 import OnboardingScreen from './screens/OnboardingScreen';
 import {
   exportSignedBackupFile,
@@ -113,34 +116,7 @@ const Tab = createBottomTabNavigator();
 
 const STORAGE_KEY_PROFILE = '@armario_digital:user_profile';
 
-/**
- * Hook que monitora se o teclado virtual está aberto (keyboardDidShow / keyboardDidHide)
- * para aplicar espaçamento extra apenas enquanto o teclado estiver ativo (sem vazio no rodapé).
- */
-function useKeyboardVisible() {
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-
-  useEffect(() => {
-    const showEvent =
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent =
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-
-    const subShow = Keyboard.addListener(showEvent, () => {
-      setKeyboardVisible(true);
-    });
-    const subHide = Keyboard.addListener(hideEvent, () => {
-      setKeyboardVisible(false);
-    });
-
-    return () => {
-      subShow?.remove?.();
-      subHide?.remove?.();
-    };
-  }, []);
-
-  return keyboardVisible;
-}
+// Hook useKeyboardVisible modularizado em ./hooks/useKeyboardVisible (monitora keyboardDidShow / keyboardDidHide)
 
 const TEMA = {
   ...DarkTheme,
@@ -1682,6 +1658,7 @@ function InventarioScreen({ refreshKey }) {
   const [aRestaurarBackup, setARestaurarBackup] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
   const [editingItemName, setEditingItemName] = useState('');
+  const [editingItemMinQty, setEditingItemMinQty] = useState('3');
   const [editingItemSpaceId, setEditingItemSpaceId] = useState(null);
   const [editingItemImageUri, setEditingItemImageUri] = useState(null);
   const [inventoryCameraOpen, setInventoryCameraOpen] = useState(false);
@@ -1802,6 +1779,7 @@ function InventarioScreen({ refreshKey }) {
   const handleIniciarEdicaoItem = useCallback((item) => {
     setEditingItemId(item.id);
     setEditingItemName(String(item.name ?? ''));
+    setEditingItemMinQty(String(item.min_quantity ?? 3));
     setEditingItemSpaceId(item.space_id ?? null);
     setEditingItemImageUri(item.image_uri ?? null);
     setInventoryCameraOpen(false);
@@ -1810,6 +1788,7 @@ function InventarioScreen({ refreshKey }) {
   const handleCancelarEdicaoItem = useCallback(() => {
     setEditingItemId(null);
     setEditingItemName('');
+    setEditingItemMinQty('3');
     setEditingItemSpaceId(null);
     setEditingItemImageUri(null);
     setInventoryCameraOpen(false);
@@ -1847,8 +1826,9 @@ function InventarioScreen({ refreshKey }) {
 
   const handleSalvarEdicaoItem = useCallback(
     async (item) => {
-      const nomeLimpo = editingItemName.trim();
+      const nomeLimpo = sanitizeTextInput(editingItemName);
       if (!nomeLimpo || aSalvarEdicaoItem) return;
+      const minQtyValidado = sanitizeQuantityInput(editingItemMinQty, 3, 99999);
 
       setASalvarEdicaoItem(true);
       try {
@@ -1856,6 +1836,7 @@ function InventarioScreen({ refreshKey }) {
           name: nomeLimpo,
           space_id: editingItemSpaceId,
           image_uri: editingItemImageUri,
+          min_quantity: minQtyValidado,
         });
         setFailedImageIds((prev) => {
           if (!prev[item.id]) return prev;
@@ -1878,58 +1859,64 @@ function InventarioScreen({ refreshKey }) {
       aSalvarEdicaoItem,
       carregarItens,
       editingItemImageUri,
+      editingItemMinQty,
       editingItemName,
       editingItemSpaceId,
       searchQuery,
     ]
   );
 
-  const handleImportarLoteCsv = useCallback(async () => {
-    const texto = csvImportText.trim();
-    if (!texto || aImportarCsv) return;
+  const handleImportarLoteCsv = useCallback(
+    async (rawTextParam) => {
+      const texto = String(rawTextParam ?? csvImportText).trim();
+      if (!texto || aImportarCsv) return false;
 
-    const validacao = validateCsvPayloadSize(texto);
-    if (!validacao.valid) {
-      Alert.alert(
-        'Lote CSV excede o limite de segurança',
-        'Por segurança, envie lotes de até 512 KB ou 2.500 linhas por vez.'
-      );
-      return;
-    }
-
-    setAImportarCsv(true);
-    try {
-      const stats = await importInventoryFromCsvText(
-        texto,
-        bulkUpsertItemsFromCatalog
-      );
-      if (stats.totalProcessed === 0) {
+      const validacao = validateCsvPayloadSize(texto);
+      if (!validacao.valid) {
         Alert.alert(
-          'Nenhuma linha válida',
-          'Informe linhas no formato: Código de Barras;Nome do Produto;Quantidade;Espaço'
+          'Lote CSV excede o limite de segurança',
+          'Por segurança, envie lotes de até 512 KB ou 2.500 linhas por vez.'
         );
-        return;
+        return false;
       }
 
-      setCsvImportText('');
-      setShowCsvImportPanel(false);
-      Keyboard.dismiss();
-      await carregarItens(searchQuery);
+      setAImportarCsv(true);
+      try {
+        const stats = await importInventoryFromCsvText(
+          texto,
+          bulkUpsertItemsFromCatalog
+        );
+        if (stats.totalProcessed === 0) {
+          Alert.alert(
+            'Nenhuma linha válida',
+            'Informe linhas no formato: Código de Barras;Nome do Produto;Quantidade;Espaço'
+          );
+          return false;
+        }
 
-      Alert.alert(
-        'Lote CSV processado',
-        `${stats.totalProcessed} registro(s) processado(s): ${stats.insertedCount} novo(s), ${stats.updatedCount} atualizado(s) e ${stats.createdSpacesCount} espaço(s) criado(s).`
-      );
-    } catch (error) {
-      console.error('Erro ao importar lote CSV:', error);
-      Alert.alert(
-        'Erro na importação',
-        'Não foi possível processar o lote CSV informado.'
-      );
-    } finally {
-      setAImportarCsv(false);
-    }
-  }, [aImportarCsv, carregarItens, csvImportText, searchQuery]);
+        setCsvImportText('');
+        setShowCsvImportPanel(false);
+        Keyboard.dismiss();
+        await carregarItens(searchQuery);
+
+        Alert.alert(
+          'Lote CSV processado',
+          `${stats.totalProcessed} registro(s) processado(s): ${stats.insertedCount} novo(s), ${stats.updatedCount} atualizado(s) e ${stats.createdSpacesCount} espaço(s) criado(s).`
+        );
+        return true;
+      } catch (error) {
+        console.error('Erro ao importar lote CSV:', error);
+        Alert.alert(
+          'Erro na importação',
+          'Não foi possível processar o lote CSV informado.'
+        );
+        return false;
+      } finally {
+        setAImportarCsv(false);
+      }
+    },
+    [aImportarCsv, carregarItens, csvImportText, searchQuery]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -2039,7 +2026,8 @@ function InventarioScreen({ refreshKey }) {
 
   const lowStockCount = items.reduce((acc, item) => {
     const qtd = Number(item.quantity ?? 1);
-    return qtd > 0 && qtd <= 3 ? acc + 1 : acc;
+    const minQty = Math.max(0, Number(item.min_quantity ?? 3));
+    return qtd > 0 && qtd <= minQty ? acc + 1 : acc;
   }, 0);
 
   const outOfStockCount = items.reduce((acc, item) => {
@@ -2049,7 +2037,8 @@ function InventarioScreen({ refreshKey }) {
 
   const displayedItems = items.filter((item) => {
     const qtd = Number(item.quantity ?? 1);
-    if (stockFilter === 'low') return qtd > 0 && qtd <= 3;
+    const minQty = Math.max(0, Number(item.min_quantity ?? 3));
+    if (stockFilter === 'low') return qtd > 0 && qtd <= minQty;
     if (stockFilter === 'out') return qtd === 0;
     return true;
   });
@@ -2218,216 +2207,18 @@ function InventarioScreen({ refreshKey }) {
               />
 
               {/* Painel de Importação em Lote CSV (Interoperabilidade B2B / ERP) */}
-              <View style={styles.csvImportCard}>
-                <View style={styles.csvImportHeaderRow}>
-                  <View style={styles.csvImportTitleBlock}>
-                    <Text style={styles.csvImportTitle}>
-                      Importação em Lote (ERP / CSV)
-                    </Text>
-                    <Text style={styles.csvImportSubtitle}>
-                      Sincronize SKUs, saldos e locais via planilha
-                    </Text>
-                  </View>
+              <CsvBulkImportCard
+                importing={aImportarCsv}
+                onImportCsv={handleImportarLoteCsv}
+              />
 
-                  <TouchableOpacity
-                    style={[
-                      styles.csvImportTogglePill,
-                      showCsvImportPanel && styles.csvImportTogglePillActive,
-                    ]}
-                    activeOpacity={0.8}
-                    onPress={() => setShowCsvImportPanel((prev) => !prev)}
-                  >
-                    <Layers
-                      size={14}
-                      color={showCsvImportPanel ? TOKENS.ground : TOKENS.text}
-                      strokeWidth={1.75}
-                    />
-                    <Text
-                      style={[
-                        styles.csvImportToggleText,
-                        showCsvImportPanel && styles.csvImportToggleTextActive,
-                      ]}
-                    >
-                      {showCsvImportPanel ? 'Fechar' : 'Importar CSV'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {showCsvImportPanel && (
-                  <View style={styles.csvImportBody}>
-                    <Text style={styles.csvImportHint}>
-                      Formato aceito (vírgula ou ponto e vírgula):{'\n'}
-                      Código de Barras;Nome do Produto;Quantidade;Espaço
-                    </Text>
-                    <TextInput
-                      style={styles.csvImportInput}
-                      value={csvImportText}
-                      onChangeText={setCsvImportText}
-                      placeholder={
-                        '7891000100103;Caixa Organizadora 20L;15;Galpão A\n7892000200206;Parafusadeira 20V;4;Corredor B'
-                      }
-                      placeholderTextColor={TOKENS.faint}
-                      multiline
-                      numberOfLines={4}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                    <TouchableOpacity
-                      style={[
-                        styles.primaryInvertedPill,
-                        (!csvImportText.trim() || aImportarCsv) &&
-                          styles.controlDisabled,
-                      ]}
-                      activeOpacity={0.85}
-                      onPress={handleImportarLoteCsv}
-                      disabled={!csvImportText.trim() || aImportarCsv}
-                    >
-                      {aImportarCsv ? (
-                        <ActivityIndicator size="small" color={TOKENS.ground} />
-                      ) : (
-                        <View style={styles.inlineIconButtonRow}>
-                          <Check
-                            size={16}
-                            color={TOKENS.ground}
-                            strokeWidth={2}
-                          />
-                          <Text style={styles.primaryInvertedPillText}>
-                            Processar Lote CSV
-                          </Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </View>
-
-              {/* Painel Auditável de Movimentações de Estoque (Audit Log B2B) */}
-              <View style={styles.csvImportCard}>
-                <View style={styles.csvImportHeaderRow}>
-                  <View style={styles.csvImportTitleBlock}>
-                    <Text style={styles.csvImportTitle}>
-                      Histórico de Movimentações
-                    </Text>
-                    <Text style={styles.csvImportSubtitle}>
-                      {stockMovements.length}{' '}
-                      {stockMovements.length === 1
-                        ? 'registro auditável recente'
-                        : 'registros auditáveis recentes'}
-                    </Text>
-                  </View>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.csvImportTogglePill,
-                      showAuditLogPanel && styles.csvImportTogglePillActive,
-                    ]}
-                    activeOpacity={0.8}
-                    onPress={() => setShowAuditLogPanel((prev) => !prev)}
-                  >
-                    <RefreshCw
-                      size={13}
-                      color={showAuditLogPanel ? TOKENS.ground : TOKENS.text}
-                      strokeWidth={1.75}
-                    />
-                    <Text
-                      style={[
-                        styles.csvImportToggleText,
-                        showAuditLogPanel && styles.csvImportToggleTextActive,
-                      ]}
-                    >
-                      {showAuditLogPanel ? 'Ocultar' : 'Auditoria'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {showAuditLogPanel && (
-                  <View style={styles.csvImportBody}>
-                    {stockMovements.length === 0 ? (
-                      <Text style={styles.csvImportHint}>
-                        Nenhuma movimentação registrada ainda.
-                      </Text>
-                    ) : (
-                      stockMovements.slice(0, 12).map((mov) => {
-                        const isPositive = Number(mov.delta) >= 0;
-                        const deltaFormatted = isPositive
-                          ? `+${mov.delta}`
-                          : String(mov.delta);
-                        const reasonLabel =
-                          mov.reason === 'cadastro_inicial'
-                            ? 'Cadastro'
-                            : mov.reason === 'sincronizacao_csv'
-                              ? 'Lote CSV'
-                              : mov.reason === 'transferencia_local'
-                                ? 'Transferência'
-                                : isPositive
-                                  ? 'Entrada'
-                                  : 'Baixa';
-
-                        return (
-                          <View key={String(mov.id)} style={styles.auditLogRow}>
-                            <View style={styles.auditLogLeftCol}>
-                              <Text
-                                style={styles.auditLogItemName}
-                                numberOfLines={1}
-                              >
-                                {mov.item_name}
-                              </Text>
-                              <Text style={styles.auditLogMetaText}>
-                                {reasonLabel} · {mov.previous_qty} para{' '}
-                                {mov.new_qty} un. ·{' '}
-                                {formatarData(mov.created_at)}
-                              </Text>
-                            </View>
-
-                            <View
-                              style={[
-                                styles.auditDeltaPill,
-                                isPositive
-                                  ? styles.quantityPillPositive
-                                  : styles.quantityPillWarning,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.auditDeltaText,
-                                  isPositive
-                                    ? styles.quantityPillValuePositive
-                                    : styles.quantityPillValueWarning,
-                                ]}
-                              >
-                                {deltaFormatted}
-                              </Text>
-                            </View>
-                          </View>
-                        );
-                      })
-                    )}
-
-                    {stockMovements.length > 0 && (
-                      <TouchableOpacity
-                        style={[
-                          styles.primaryInvertedPill,
-                          aExportarAuditoria && styles.controlDisabled,
-                        ]}
-                        activeOpacity={0.85}
-                        onPress={handleExportarMovimentacoesCsv}
-                        disabled={aExportarAuditoria}
-                      >
-                        {aExportarAuditoria ? (
-                          <ActivityIndicator
-                            size="small"
-                            color={TOKENS.ground}
-                          />
-                        ) : (
-                          <Text style={styles.primaryInvertedPillText}>
-                            Exportar Auditoria CSV ({stockMovements.length})
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
-              </View>
+              {/* Painel Auditável de Movimentações de Estoque (Audit Log B2B — showAuditLogPanel) */}
+              <AuditHistoryCard
+                stockMovements={stockMovements}
+                exporting={aExportarAuditoria}
+                onExportMovements={handleExportarMovimentacoesCsv}
+                formatarData={formatarData}
+              />
             </View>
           ) : null
         }
@@ -2723,6 +2514,25 @@ function InventarioScreen({ refreshKey }) {
                       placeholder="Nome do item"
                       placeholderTextColor={TOKENS.faint}
                     />
+
+                    {!isHome && (
+                      <View style={styles.minQtyEditRow}>
+                        <Text style={styles.inlineEditLabel}>
+                          Estoque mínimo de alerta (un.):
+                        </Text>
+                        <TextInput
+                          style={[styles.input, styles.minQtyEditInput]}
+                          value={editingItemMinQty}
+                          onChangeText={(txt) =>
+                            setEditingItemMinQty(txt.replace(/[^0-9]/g, ''))
+                          }
+                          placeholder="3"
+                          placeholderTextColor={TOKENS.faint}
+                          keyboardType="numeric"
+                          maxLength={5}
+                        />
+                      </View>
+                    )}
                     <ScrollView
                       horizontal
                       showsHorizontalScrollIndicator={false}
@@ -4510,5 +4320,16 @@ const styles = StyleSheet.create({
   lightboxImage: {
     width: '100%',
     height: '100%',
+  },
+  minQtyEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  minQtyEditInput: {
+    width: 96,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
 });
