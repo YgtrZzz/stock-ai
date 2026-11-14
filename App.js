@@ -69,6 +69,7 @@ import {
   getItemByBarcode,
   getItems,
   getItemsBySpace,
+  backfillVisualSignatures,
   bulkUpsertItemsFromCatalog,
   restoreDatabaseSnapshot,
   updateItemQuantity,
@@ -104,6 +105,10 @@ import {
   validateCsvPayloadSize,
 } from './utils/securityValidators';
 import { buildYoloInputTensorFromBase64 } from './vision/imagePreprocessor';
+import {
+  computeVisualSignature,
+  findBestVisualMatch,
+} from './vision/visualMatcher';
 import {
   resolveYoloEngineStatus,
   runYoloInference,
@@ -156,6 +161,8 @@ function ScannerScreen({ onInventoryUpdated }) {
   const [currentBarcode, setCurrentBarcode] = useState(null);
   const [matchedExistingItem, setMatchedExistingItem] = useState(null);
   const [capturedImage, setCapturedImage] = useState(null);
+  const [capturedVisualSignature, setCapturedVisualSignature] = useState(null);
+  const [visualRecognizedMatch, setVisualRecognizedMatch] = useState(null);
   const [yoloDetections, setYoloDetections] = useState([]);
   const [aCapturarFoto, setACapturarFoto] = useState(false);
   const [lastScannedData, setLastScannedData] = useState('');
@@ -183,6 +190,7 @@ function ScannerScreen({ onInventoryUpdated }) {
             }
             return null;
           });
+          await backfillVisualSignatures(computeVisualSignature);
         } catch (error) {
           console.error('Erro ao carregar espaços no Scanner:', error);
         }
@@ -268,6 +276,45 @@ function ScannerScreen({ onInventoryUpdated }) {
           modeloTflite
         );
         setYoloDetections(resultadoYolo.detections);
+
+        // Reconhecimento Visual por Foto + Assinatura YOLO (identifica nome, local e código de itens já cadastrados)
+        const novaAssinatura = foto.base64
+          ? computeVisualSignature({
+              base64: foto.base64,
+              detections: resultadoYolo.detections,
+            })
+          : null;
+        setCapturedVisualSignature(novaAssinatura);
+
+        if (novaAssinatura) {
+          await backfillVisualSignatures(computeVisualSignature);
+          const itensCadastrados = await getItems('');
+          const matchVisual = findBestVisualMatch(
+            novaAssinatura,
+            itensCadastrados
+          );
+          if (matchVisual?.item) {
+            setVisualRecognizedMatch(matchVisual);
+            setMatchedExistingItem(matchVisual.item);
+            setNome(String(matchVisual.item.name ?? ''));
+            if (matchVisual.item.space_id !== undefined) {
+              setEspacoSelecionadoId(matchVisual.item.space_id ?? null);
+            }
+            if (matchVisual.item.barcode) {
+              setCurrentBarcode(matchVisual.item.barcode);
+              setLastScannedData(matchVisual.item.barcode);
+            }
+            Vibration.vibrate([0, 90, 60, 90]);
+          } else {
+            if (visualRecognizedMatch) {
+              setMatchedExistingItem(null);
+              setNome('');
+              setEspacoSelecionadoId(null);
+              setCurrentBarcode(null);
+            }
+            setVisualRecognizedMatch(null);
+          }
+        }
       }
     } catch (error) {
       console.error('Erro ao capturar foto do item:', error);
@@ -319,13 +366,17 @@ function ScannerScreen({ onInventoryUpdated }) {
     if (!nomeLimpo || aGuardar) return;
 
     const qtdFinal = Math.max(1, sanitizeQuantityInput(quantidade, 1, 99999));
-    const barcodeSeguro = isBusiness
-      ? sanitizeBarcodeInput(currentBarcode) || null
-      : null;
+    const barcodeSeguro = sanitizeBarcodeInput(currentBarcode) || null;
+    const correspondeAoExistente = Boolean(
+      matchedExistingItem &&
+        ((isBusiness && barcodeSeguro && barcodeSeguro === matchedExistingItem.barcode) ||
+          nomeLimpo.toLowerCase() ===
+            String(matchedExistingItem.name ?? '').trim().toLowerCase())
+    );
 
     setAGuardar(true);
     try {
-      if (isBusiness && matchedExistingItem) {
+      if (correspondeAoExistente && matchedExistingItem) {
         const novaQtdTotal = Math.min(
           99999,
           Number(matchedExistingItem.quantity ?? 0) + qtdFinal
@@ -338,8 +389,12 @@ function ScannerScreen({ onInventoryUpdated }) {
         await updateItemDetails(matchedExistingItem.id, {
           name: nomeLimpo,
           space_id: espacoSelecionadoId,
-          barcode: barcodeSeguro,
+          barcode: barcodeSeguro || matchedExistingItem.barcode || null,
           image_uri: capturedImage || matchedExistingItem.image_uri || null,
+          visual_signature:
+            capturedVisualSignature ||
+            matchedExistingItem.visual_signature ||
+            null,
         });
       } else {
         await insertItem(
@@ -347,7 +402,8 @@ function ScannerScreen({ onInventoryUpdated }) {
           espacoSelecionadoId,
           qtdFinal,
           barcodeSeguro,
-          capturedImage
+          capturedImage,
+          capturedVisualSignature
         );
       }
 
@@ -356,7 +412,7 @@ function ScannerScreen({ onInventoryUpdated }) {
         ? ` em "${formatarNomeEspaco(espacoEscolhido)}"`
         : ' (Sem local definido)';
 
-      const eraExistente = Boolean(isBusiness && matchedExistingItem);
+      const eraExistente = correspondeAoExistente;
 
       setNome('');
       setQuantidade('1');
@@ -364,6 +420,8 @@ function ScannerScreen({ onInventoryUpdated }) {
       setCurrentBarcode(null);
       setMatchedExistingItem(null);
       setCapturedImage(null);
+      setCapturedVisualSignature(null);
+      setVisualRecognizedMatch(null);
       setYoloDetections([]);
       lastScannedRef.current = '';
       setLastScannedData('');
@@ -374,7 +432,7 @@ function ScannerScreen({ onInventoryUpdated }) {
       Alert.alert(
         eraExistente ? 'Estoque atualizado' : 'Item salvo com sucesso',
         eraExistente
-          ? `+${qtdFinal} un. somadas ao SKU "${nomeLimpo}"${destinoTexto}.`
+          ? `+${qtdFinal} un. somadas a "${nomeLimpo}"${destinoTexto}.`
           : `${qtdFinal}x "${nomeLimpo}" registrado${destinoTexto}.`
       );
     } catch (error) {
@@ -415,7 +473,7 @@ function ScannerScreen({ onInventoryUpdated }) {
       );
     }
 
-    // Quando já há uma fotografia capturada, exibe a própria foto enquadrada no estúdio óptico (sem cortes!)
+    // Quando já há uma fotografia capturada, exibe a própria foto limpa e sem obstruções no estúdio óptico
     if (capturedImage) {
       return (
         <View style={styles.capturedStageWrapper}>
@@ -436,25 +494,6 @@ function ScannerScreen({ onInventoryUpdated }) {
               }}
             />
           </TouchableOpacity>
-
-          <View style={styles.capturedStageTopBar} pointerEvents="none">
-            <View style={styles.capturedStageBadge}>
-              <Check
-                size={13}
-                color={TOKENS.pillPositiveInk}
-                strokeWidth={2}
-              />
-              <Text style={styles.capturedStageBadgeText}>
-                Foto pronta · Toque na imagem para ampliar
-              </Text>
-            </View>
-          </View>
-
-          <YoloCameraOverlay
-            detections={yoloDetections}
-            userProfile={userProfile}
-            onApplySuggestion={handleAplicarSugestaoYolo}
-          />
         </View>
       );
     }
@@ -585,6 +624,14 @@ function ScannerScreen({ onInventoryUpdated }) {
                   activeOpacity={0.85}
                   onPress={() => {
                     setCapturedImage(null);
+                    setCapturedVisualSignature(null);
+                    if (visualRecognizedMatch) {
+                      setMatchedExistingItem(null);
+                      setNome('');
+                      setEspacoSelecionadoId(null);
+                      setCurrentBarcode(null);
+                    }
+                    setVisualRecognizedMatch(null);
                     setYoloDetections([]);
                     Vibration.vibrate(40);
                   }}
@@ -615,6 +662,49 @@ function ScannerScreen({ onInventoryUpdated }) {
                 : 'Identificar produto ou código SKU'}
             </Text>
           </View>
+
+          {/* Banner de Reconhecimento Visual por Foto (reconhece automaticamente nome, local e código de item já salvo) */}
+          {visualRecognizedMatch?.item ? (
+            <View style={styles.scannedBarcodeBanner}>
+              <View style={styles.scannedBarcodeLeft}>
+                <Check
+                  size={16}
+                  color={TOKENS.pillPositiveInk}
+                  strokeWidth={2}
+                />
+                <View style={styles.scannedBarcodeTextCol}>
+                  <Text style={styles.scannedBarcodeText} numberOfLines={1}>
+                    Item reconhecido pela foto: {visualRecognizedMatch.item.name}
+                  </Text>
+                  <Text style={styles.scannedBarcodeSubtext}>
+                    Local: {visualRecognizedMatch.item.space_name || 'Sem local'}
+                    {visualRecognizedMatch.item.barcode
+                      ? ` · Código: ${visualRecognizedMatch.item.barcode}`
+                      : ''}{' '}
+                    · Saldo: {visualRecognizedMatch.item.quantity} un.
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  setVisualRecognizedMatch(null);
+                  setMatchedExistingItem(null);
+                  setNome('');
+                  setEspacoSelecionadoId(null);
+                  setCurrentBarcode(null);
+                  lastScannedRef.current = '';
+                  setLastScannedData('');
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <X
+                  size={16}
+                  color={TOKENS.pillPositiveInk}
+                  strokeWidth={1.5}
+                />
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
           {/* Banner de Código de Barras Escaneado no Perfil Business */}
           {isBusiness && currentBarcode ? (
@@ -1661,6 +1751,7 @@ function InventarioScreen({ refreshKey }) {
   const [editingItemMinQty, setEditingItemMinQty] = useState('3');
   const [editingItemSpaceId, setEditingItemSpaceId] = useState(null);
   const [editingItemImageUri, setEditingItemImageUri] = useState(null);
+  const [editingItemVisualSig, setEditingItemVisualSig] = useState(undefined);
   const [inventoryCameraOpen, setInventoryCameraOpen] = useState(false);
   const [aCapturarFotoItem, setACapturarFotoItem] = useState(false);
   const [aSalvarEdicaoItem, setASalvarEdicaoItem] = useState(false);
@@ -1782,6 +1873,7 @@ function InventarioScreen({ refreshKey }) {
     setEditingItemMinQty(String(item.min_quantity ?? 3));
     setEditingItemSpaceId(item.space_id ?? null);
     setEditingItemImageUri(item.image_uri ?? null);
+    setEditingItemVisualSig(undefined);
     setInventoryCameraOpen(false);
   }, []);
 
@@ -1791,6 +1883,7 @@ function InventarioScreen({ refreshKey }) {
     setEditingItemMinQty('3');
     setEditingItemSpaceId(null);
     setEditingItemImageUri(null);
+    setEditingItemVisualSig(undefined);
     setInventoryCameraOpen(false);
   }, []);
 
@@ -1810,9 +1903,15 @@ function InventarioScreen({ refreshKey }) {
     try {
       const foto = await inventoryCameraRef.current.takePictureAsync({
         quality: 0.65,
+        base64: true,
       });
       if (foto?.uri) {
         setEditingItemImageUri(foto.uri);
+        if (foto.base64) {
+          setEditingItemVisualSig(
+            computeVisualSignature({ base64: foto.base64 })
+          );
+        }
         setInventoryCameraOpen(false);
         Vibration.vibrate(80);
       }
@@ -1837,6 +1936,7 @@ function InventarioScreen({ refreshKey }) {
           space_id: editingItemSpaceId,
           image_uri: editingItemImageUri,
           min_quantity: minQtyValidado,
+          visual_signature: editingItemVisualSig,
         });
         setFailedImageIds((prev) => {
           if (!prev[item.id]) return prev;
@@ -1862,6 +1962,7 @@ function InventarioScreen({ refreshKey }) {
       editingItemMinQty,
       editingItemName,
       editingItemSpaceId,
+      editingItemVisualSig,
       searchQuery,
     ]
   );

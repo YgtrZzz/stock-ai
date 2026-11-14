@@ -165,6 +165,7 @@ export async function initDatabase() {
           min_quantity INTEGER NOT NULL DEFAULT 3,
           barcode TEXT,
           image_uri TEXT,
+          visual_signature TEXT,
           created_at TEXT NOT NULL
         );
 
@@ -207,6 +208,11 @@ export async function initDatabase() {
       if (!nomesColunas.has('min_quantity')) {
         await db.execAsync(
           'ALTER TABLE items ADD COLUMN min_quantity INTEGER NOT NULL DEFAULT 3;'
+        );
+      }
+      if (!nomesColunas.has('visual_signature')) {
+        await db.execAsync(
+          'ALTER TABLE items ADD COLUMN visual_signature TEXT;'
         );
       }
 
@@ -478,7 +484,8 @@ export async function insertItem(
   space_id = null,
   quantity = 1,
   barcode = null,
-  image_uri = null
+  image_uri = null,
+  visual_signature = null
 ) {
   const nome = limparNome(name);
   const spaceId = space_id ?? null;
@@ -487,13 +494,24 @@ export async function insertItem(
     Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
   const finalBarcode = barcode ? String(barcode).trim() || null : null;
   const finalImageUri = await persistCapturedImage(image_uri);
+  const finalVisualSig = visual_signature
+    ? String(visual_signature).trim() || null
+    : null;
 
   const db = await initDatabase();
   const createdAt = new Date().toISOString();
 
   const result = await db.runAsync(
-    'INSERT INTO items (name, space_id, quantity, barcode, image_uri, created_at) VALUES (?, ?, ?, ?, ?, ?);',
-    [nome, spaceId, finalQuantity, finalBarcode, finalImageUri, createdAt]
+    'INSERT INTO items (name, space_id, quantity, barcode, image_uri, visual_signature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);',
+    [
+      nome,
+      spaceId,
+      finalQuantity,
+      finalBarcode,
+      finalImageUri,
+      finalVisualSig,
+      createdAt,
+    ]
   );
 
   await recordStockMovement(db, {
@@ -512,6 +530,7 @@ export async function insertItem(
     quantity: finalQuantity,
     barcode: finalBarcode,
     image_uri: finalImageUri,
+    visual_signature: finalVisualSig,
     created_at: createdAt,
   };
 }
@@ -523,21 +542,73 @@ export async function insertItem(
  * @param {string|null} image_uri URI da nova fotografia (ou null para limpar).
  * @returns {Promise<string|null>} Novo URI permanente persistido.
  */
-export async function updateItemImage(id, image_uri = null) {
+export async function updateItemImage(
+  id,
+  image_uri = null,
+  visual_signature = undefined
+) {
   const db = await initDatabase();
   const anterior = await db.getFirstAsync(
-    'SELECT image_uri FROM items WHERE id = ?;',
+    'SELECT image_uri, visual_signature FROM items WHERE id = ?;',
     [id]
   );
   const finalImageUri = await persistCapturedImage(image_uri);
-  await db.runAsync('UPDATE items SET image_uri = ? WHERE id = ?;', [
-    finalImageUri,
-    id,
-  ]);
+  const finalVisualSig =
+    visual_signature === undefined
+      ? (anterior?.visual_signature ?? null)
+      : visual_signature
+        ? String(visual_signature).trim() || null
+        : null;
+  await db.runAsync(
+    'UPDATE items SET image_uri = ?, visual_signature = ? WHERE id = ?;',
+    [finalImageUri, finalVisualSig, id]
+  );
   if (anterior?.image_uri && anterior.image_uri !== finalImageUri) {
     await deletePersistedImageIfOwned(anterior.image_uri);
   }
   return finalImageUri;
+}
+
+/**
+ * Indexa automaticamente assinaturas visuais v2 para itens já existentes no banco
+ * que possuem fotografia (`image_uri`), mas ainda não têm `visual_signature` v2.
+ *
+ * @param {(payload: { base64: string, detections?: Array }) => string} computeSignatureFn
+ * @returns {Promise<number>} Quantidade de itens atualizados.
+ */
+export async function backfillVisualSignatures(computeSignatureFn) {
+  if (typeof computeSignatureFn !== 'function') return 0;
+  if (typeof FileSystem.readAsStringAsync !== 'function') return 0;
+
+  const db = await initDatabase();
+  const pendentes = await db.getAllAsync(`
+    SELECT id, image_uri, visual_signature
+    FROM items
+    WHERE image_uri IS NOT NULL
+      AND TRIM(image_uri) != ''
+      AND (visual_signature IS NULL OR visual_signature NOT LIKE '%"v":3%');
+  `);
+
+  let updated = 0;
+  for (const row of pendentes) {
+    try {
+      const base64 = await FileSystem.readAsStringAsync(row.image_uri, {
+        encoding: FileSystem.EncodingType?.Base64 ?? 'base64',
+      });
+      if (!base64) continue;
+      const novaSig = computeSignatureFn({ base64, detections: [] });
+      if (novaSig) {
+        await db.runAsync(
+          'UPDATE items SET visual_signature = ? WHERE id = ?;',
+          [novaSig, row.id]
+        );
+        updated += 1;
+      }
+    } catch {
+      // Ignora silenciosamente arquivos ausentes para não interromper o fluxo
+    }
+  }
+  return updated;
 }
 
 /**
@@ -559,6 +630,7 @@ export async function getItemByBarcode(barcode) {
       COALESCE(items.quantity, 1) AS quantity,
       items.barcode,
       items.image_uri,
+      items.visual_signature,
       spaces.name AS space_name,
       items.created_at
     FROM items
@@ -595,6 +667,7 @@ export async function getItems(searchQuery = '') {
         COALESCE(items.min_quantity, 3) AS min_quantity,
         items.barcode,
         items.image_uri,
+        items.visual_signature,
         spaces.name AS space_name,
         items.created_at
       FROM items
@@ -617,6 +690,7 @@ export async function getItems(searchQuery = '') {
       COALESCE(items.min_quantity, 3) AS min_quantity,
       items.barcode,
       items.image_uri,
+      items.visual_signature,
       spaces.name AS space_name,
       items.created_at
     FROM items
@@ -795,13 +869,13 @@ export async function updateItemQuantity(id, newQuantity, reason = null) {
  */
 export async function updateItemDetails(
   id,
-  { name, space_id, barcode, image_uri, min_quantity } = {}
+  { name, space_id, barcode, image_uri, min_quantity, visual_signature } = {}
 ) {
   const nome = limparNome(name);
   const db = await initDatabase();
 
   const anterior = await db.getFirstAsync(
-    'SELECT id, name, space_id, COALESCE(quantity, 1) AS quantity, COALESCE(min_quantity, 3) AS min_quantity, barcode, image_uri FROM items WHERE id = ?;',
+    'SELECT id, name, space_id, COALESCE(quantity, 1) AS quantity, COALESCE(min_quantity, 3) AS min_quantity, barcode, image_uri, visual_signature FROM items WHERE id = ?;',
     [id]
   );
 
@@ -829,9 +903,24 @@ export async function updateItemDetails(
       ? anterior.image_uri
       : await persistCapturedImage(image_uri);
 
+  const nextVisualSig =
+    visual_signature === undefined
+      ? (anterior.visual_signature ?? null)
+      : visual_signature
+        ? String(visual_signature).trim() || null
+        : null;
+
   await db.runAsync(
-    'UPDATE items SET name = ?, space_id = ?, barcode = ?, image_uri = ?, min_quantity = ? WHERE id = ?;',
-    [nome, nextSpaceId, nextBarcode, nextImageUri, nextMinQuantity, id]
+    'UPDATE items SET name = ?, space_id = ?, barcode = ?, image_uri = ?, min_quantity = ?, visual_signature = ? WHERE id = ?;',
+    [
+      nome,
+      nextSpaceId,
+      nextBarcode,
+      nextImageUri,
+      nextMinQuantity,
+      nextVisualSig,
+      id,
+    ]
   );
 
   if (
