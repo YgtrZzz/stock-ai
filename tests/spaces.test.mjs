@@ -206,4 +206,53 @@ describe('Visual Map — Spaces Image Storage & Hierarchy Migration (TDD)', () =
     assert.equal(estanteNoBanco.parent_name, 'Garagem');
     assert.equal(estanteNoBanco.image_uri, permanentUri);
   });
+
+  it('deleteSpace safely promotes child sub-spaces, relocates items to parent space without data loss, and deletes orphaned space image', async () => {
+    await dbModule.initDatabase();
+    assert.equal(
+      typeof dbModule.deleteSpace,
+      'function',
+      'deleteSpace must be exported from database.js'
+    );
+
+    const galpaoPrincipal = await dbModule.addSpace('Galpão Principal', null, null);
+    const corredorIntermediario = await dbModule.addSpace(
+      'Corredor Intermediário',
+      galpaoPrincipal.id,
+      'file:///app/cache/Camera/corredor.jpg'
+    );
+    const prateleiraFilha = await dbModule.addSpace(
+      'Prateleira 01',
+      corredorIntermediario.id,
+      null
+    );
+
+    const itemNoCorredor = await dbModule.insertItem(
+      'Bobina Film Stretch',
+      corredorIntermediario.id,
+      12,
+      '7891110002229',
+      null
+    );
+
+    const res = await dbModule.deleteSpace(corredorIntermediario.id);
+    assert.equal(res.deletedId, corredorIntermediario.id);
+    assert.equal(res.promotedChildrenCount, 1);
+    assert.equal(res.relocatedItemsCount, 1);
+
+    // O sub-espaço filho não foi destruído pelo CASCADE: foi promovido para Galpão Principal!
+    const spacesAfter = await dbModule.getSpaces();
+    assert.equal(spacesAfter.length, 2);
+    const prateleiraAtualizada = spacesAfter.find((s) => s.id === prateleiraFilha.id);
+    assert.equal(prateleiraAtualizada.parent_id, galpaoPrincipal.id);
+
+    // O item do corredor também foi realocado com segurança para Galpão Principal
+    const itemAtualizado = await dbModule.getItemByBarcode('7891110002229');
+    assert.equal(itemAtualizado.id, itemNoCorredor.id);
+    assert.equal(itemAtualizado.space_id, galpaoPrincipal.id);
+
+    // A foto órfã do corredor excluído foi removida do disco
+    assert.equal(testEnv.deletedFiles.length, 1);
+    assert.equal(testEnv.deletedFiles[0], corredorIntermediario.image_uri);
+  });
 });

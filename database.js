@@ -223,7 +223,10 @@ export async function initDatabase() {
 }
 
 function limparNome(name) {
-  const limpo = String(name ?? '').trim();
+  const limpo = String(name ?? '')
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .trim()
+    .slice(0, 160);
   if (!limpo) {
     throw new Error('O nome não pode ficar vazio.');
   }
@@ -352,6 +355,78 @@ export async function updateSpace(id, { name, image_uri = null } = {}) {
     id,
     name: nome,
     image_uri: finalImageUri,
+  };
+}
+
+/**
+ * Exclui com segurança um espaço/setor sem perder dados:
+ * 1. Promove sub-espaços filhos para o parent_id do espaço excluído (evitando deleção em cascata).
+ * 2. Realoca itens vinculados ao espaço para o parent_id do espaço excluído (ou null) e grava trilha de auditoria.
+ * 3. Remove o registro do espaço e limpa a fotografia órfã em armario_images/.
+ *
+ * @param {number} id ID do espaço a ser excluído.
+ * @returns {Promise<{ deletedId: number, promotedChildrenCount: number, relocatedItemsCount: number }>}
+ */
+export async function deleteSpace(id) {
+  const parsedId = parseInt(id, 10);
+  if (!Number.isFinite(parsedId) || parsedId <= 0) {
+    throw new Error('ID de espaço inválido.');
+  }
+
+  const db = await initDatabase();
+  const anterior = await db.getFirstAsync(
+    'SELECT id, name, parent_id, image_uri FROM spaces WHERE id = ?;',
+    [parsedId]
+  );
+
+  if (!anterior) {
+    return {
+      deletedId: parsedId,
+      promotedChildrenCount: 0,
+      relocatedItemsCount: 0,
+    };
+  }
+
+  const fallbackParentId = anterior.parent_id ?? null;
+
+  // 1. Promove sub-espaços filhos para o nível superior antes do DELETE
+  const childrenRes = await db.runAsync(
+    'UPDATE spaces SET parent_id = ? WHERE parent_id = ?;',
+    [fallbackParentId, parsedId]
+  );
+
+  // 2. Realoca itens para o espaço pai (ou null) e grava trilha de transferência no Audit Log
+  const affectedItems = await db.getAllAsync(
+    'SELECT id, name, barcode, COALESCE(quantity, 1) AS quantity FROM items WHERE space_id = ?;',
+    [parsedId]
+  );
+
+  const itemsRes = await db.runAsync(
+    'UPDATE items SET space_id = ? WHERE space_id = ?;',
+    [fallbackParentId, parsedId]
+  );
+
+  for (const item of affectedItems) {
+    await recordStockMovement(db, {
+      item_id: item.id,
+      item_name: item.name,
+      barcode: item.barcode,
+      previous_qty: item.quantity,
+      new_qty: item.quantity,
+      reason: 'transferencia_local',
+    });
+  }
+
+  // 3. Exclui o espaço e limpa sua fotografia persistida
+  await db.runAsync('DELETE FROM spaces WHERE id = ?;', [parsedId]);
+  if (anterior.image_uri) {
+    await deletePersistedImageIfOwned(anterior.image_uri);
+  }
+
+  return {
+    deletedId: parsedId,
+    promotedChildrenCount: Number(childrenRes?.changes ?? 0),
+    relocatedItemsCount: Number(itemsRes?.changes ?? affectedItems.length),
   };
 }
 
@@ -789,6 +864,7 @@ export default {
   addSpace,
   updateSpaceImage,
   updateSpace,
+  deleteSpace,
   getSpaces,
   insertItem,
   updateItemImage,

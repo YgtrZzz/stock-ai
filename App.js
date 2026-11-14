@@ -61,6 +61,7 @@ import {
   initDatabase,
   addSpace,
   updateSpace,
+  deleteSpace,
   getSpaces,
   insertItem,
   updateItemImage,
@@ -73,6 +74,7 @@ import {
   deleteItem,
 } from './database';
 import { useTensorflowModel } from 'react-native-fast-tflite';
+import B2BStockHealthBanner from './components/B2BStockHealthBanner';
 import ExportButton from './components/ExportButton';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
 import {
@@ -1000,6 +1002,35 @@ function EspacosScreen() {
     setCameraAberta(false);
   };
 
+  const handleExcluirEspaco = (espaco) => {
+    if (!espaco || aCriar) return;
+
+    Alert.alert(
+      'Excluir local com segurança',
+      `Deseja excluir "${espaco.name}"? Os itens e sub-divisões não serão perdidos (serão realocados automaticamente para o nível superior).`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir local',
+          style: 'destructive',
+          onPress: async () => {
+            setACriar(true);
+            try {
+              await deleteSpace(espaco.id);
+              handleCancelarEdicaoEspaco();
+              await carregarEspacos();
+            } catch (error) {
+              console.error('Erro ao excluir espaço:', error);
+              Alert.alert('Erro', 'Não foi possível excluir o local.');
+            } finally {
+              setACriar(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleAdicionarEspaco = async () => {
     const nomeLimpo = nomeEspaco.trim();
     if (!nomeLimpo || aCriar) return;
@@ -1187,15 +1218,31 @@ function EspacosScreen() {
 
         <View style={styles.spaceFormButtonsRow}>
           {editingSpace && (
-            <TouchableOpacity
-              style={styles.secondaryPillButton}
-              activeOpacity={0.8}
-              onPress={handleCancelarEdicaoEspaco}
-              disabled={aCriar}
-            >
-              <X size={14} color={TOKENS.text} strokeWidth={1.5} />
-              <Text style={styles.secondaryPillButtonText}>Cancelar</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity
+                style={styles.secondaryPillButton}
+                activeOpacity={0.8}
+                onPress={handleCancelarEdicaoEspaco}
+                disabled={aCriar}
+              >
+                <X size={14} color={TOKENS.text} strokeWidth={1.5} />
+                <Text style={styles.secondaryPillButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.actionPillButtonDelete}
+                activeOpacity={0.8}
+                onPress={() => handleExcluirEspaco(editingSpace)}
+                disabled={aCriar}
+              >
+                <Trash2
+                  size={14}
+                  color={TOKENS.pillNegativeInk}
+                  strokeWidth={1.5}
+                />
+                <Text style={styles.actionPillTextDelete}>Excluir</Text>
+              </TouchableOpacity>
+            </>
           )}
 
           <TouchableOpacity
@@ -1782,6 +1829,12 @@ function InventarioScreen({ refreshKey }) {
         ListHeaderComponent={
           !isHome ? (
             <View>
+              <B2BStockHealthBanner
+                items={items}
+                spaces={spaces}
+                activeFilter={stockFilter}
+                onSelectFilter={setStockFilter}
+              />
               <ExportButton
                 items={items}
                 spaces={spaces}
