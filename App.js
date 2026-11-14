@@ -84,7 +84,11 @@ import B2BStockHealthBanner from './components/B2BStockHealthBanner';
 import CsvBulkImportCard from './components/CsvBulkImportCard';
 import ExportButton from './components/ExportButton';
 import PhotoLightboxModal from './components/PhotoLightboxModal';
+import QuantityStepperControl from './components/QuantityStepperControl';
 import ScannedBarcodeBanner from './components/ScannedBarcodeBanner';
+import SpaceSelectorRow, {
+  formatSpaceHierarchyName,
+} from './components/SpaceSelectorRow';
 import VisualRecognitionBanner from './components/VisualRecognitionBanner';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
 import { ProfileContext } from './context/ProfileContext';
@@ -102,6 +106,7 @@ import {
 import { importInventoryFromCsvText } from './utils/importCsv';
 import {
   sanitizeBarcodeInput,
+  sanitizeImageUriInput,
   sanitizeQuantityInput,
   sanitizeTextInput,
   validateCsvPayloadSize,
@@ -138,14 +143,7 @@ const TEMA = {
   },
 };
 
-const LOTES_RAPIDOS_B2B = [1, 5, 10, 25];
-
-function formatarNomeEspaco(espaco) {
-  if (!espaco) return '';
-  return espaco.parent_name
-    ? `${espaco.parent_name} / ${espaco.name}`
-    : espaco.name;
-}
+const formatarNomeEspaco = formatSpaceHierarchyName;
 
 /* ==========================================================
    ABA 1: SCANNER (Adaptação Dinâmica: 'home' vs 'business')
@@ -370,6 +368,7 @@ function ScannerScreen({ onInventoryUpdated }) {
 
     const qtdFinal = Math.max(1, sanitizeQuantityInput(quantidade, 1, 99999));
     const barcodeSeguro = sanitizeBarcodeInput(currentBarcode) || null;
+    const imagemSegura = sanitizeImageUriInput(capturedImage);
     const correspondeAoExistente = Boolean(
       matchedExistingItem &&
         ((isBusiness && barcodeSeguro && barcodeSeguro === matchedExistingItem.barcode) ||
@@ -393,7 +392,7 @@ function ScannerScreen({ onInventoryUpdated }) {
           name: nomeLimpo,
           space_id: espacoSelecionadoId,
           barcode: barcodeSeguro || matchedExistingItem.barcode || null,
-          image_uri: capturedImage || matchedExistingItem.image_uri || null,
+          image_uri: imagemSegura || matchedExistingItem.image_uri || null,
           visual_signature: capturedVisualSignature
             ? mergeVisualSignatures(
                 matchedExistingItem.visual_signature,
@@ -407,7 +406,7 @@ function ScannerScreen({ onInventoryUpdated }) {
           espacoSelecionadoId,
           qtdFinal,
           barcodeSeguro,
-          capturedImage,
+          imagemSegura,
           capturedVisualSignature
         );
       }
@@ -729,62 +728,13 @@ function ScannerScreen({ onInventoryUpdated }) {
             </Text>
           </View>
 
-          <View style={styles.qtyStepperRow}>
-            <TouchableOpacity
-              style={styles.qtyStepButton}
-              activeOpacity={0.78}
-              onPress={() => handleAjustarQuantidade(-1)}
-              disabled={aGuardar}
-            >
-              <Minus size={18} color={TOKENS.text} strokeWidth={1.75} />
-            </TouchableOpacity>
-
-            <TextInput
-              style={[styles.input, styles.qtyStepperInput]}
-              value={quantidade}
-              onChangeText={(txt) => setQuantidade(txt.replace(/[^0-9]/g, ''))}
-              placeholder="1"
-              placeholderTextColor={TOKENS.faint}
-              keyboardType="numeric"
-              maxLength={5}
-              returnKeyType="done"
-              onSubmitEditing={() => Keyboard.dismiss()}
-              editable={!aGuardar}
-            />
-
-            <TouchableOpacity
-              style={styles.qtyStepButtonPrimary}
-              activeOpacity={0.8}
-              onPress={() => handleAjustarQuantidade(1)}
-              disabled={aGuardar}
-            >
-              <Plus size={18} color={TOKENS.ground} strokeWidth={2} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Atalhos de lote rápido */}
-          <View style={styles.batchControlsRow}>
-            <Text style={styles.batchLabel}>Atalhos de qtd:</Text>
-            <View style={styles.batchPillsGroup}>
-              {LOTES_RAPIDOS_B2B.map((valor) => (
-                <TouchableOpacity
-                  key={valor}
-                  style={styles.batchPill}
-                  activeOpacity={0.78}
-                  onPress={() => handleSomarLote(valor)}
-                >
-                  <Text style={styles.batchPillText}>+{valor}</Text>
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                style={styles.batchPillReset}
-                activeOpacity={0.78}
-                onPress={() => setQuantidade('1')}
-              >
-                <Text style={styles.batchPillResetText}>1 un.</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+          <QuantityStepperControl
+            quantity={quantidade}
+            onChangeQuantity={setQuantidade}
+            onAdjustQuantity={handleAjustarQuantidade}
+            onAddBatch={handleSomarLote}
+            disabled={aGuardar}
+          />
 
           {/* PASSO 3: ESCOLHER LOCAL DE ARMAZENAGEM */}
           <View style={styles.stepHeaderRow}>
@@ -797,68 +747,11 @@ function ScannerScreen({ onInventoryUpdated }) {
                 : 'Escolher local de armazenagem'}
             </Text>
           </View>
-          {espacos.length === 0 ? (
-            <View style={styles.noSpacesBox}>
-              <Text style={styles.noSpacesText}>
-                Nenhum espaço cadastrado. Crie locais na aba Espaços ou salve sem
-                local.
-              </Text>
-            </View>
-          ) : (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={styles.selectorRow}
-            >
-              <TouchableOpacity
-                style={[
-                  styles.spaceChip,
-                  espacoSelecionadoId === null && styles.spaceChipActive,
-                ]}
-                activeOpacity={0.8}
-                onPress={() => setEspacoSelecionadoId(null)}
-              >
-                <Text
-                  style={[
-                    styles.spaceChipText,
-                    espacoSelecionadoId === null && styles.spaceChipTextActive,
-                  ]}
-                >
-                  Sem local
-                </Text>
-              </TouchableOpacity>
-
-              {espacos.map((espaco) => {
-                const selecionado = espacoSelecionadoId === espaco.id;
-                return (
-                  <TouchableOpacity
-                    key={espaco.id}
-                    style={[
-                      styles.spaceChip,
-                      selecionado && styles.spaceChipActive,
-                    ]}
-                    activeOpacity={0.8}
-                    onPress={() => setEspacoSelecionadoId(espaco.id)}
-                  >
-                    <MapPin
-                      size={13}
-                      color={selecionado ? TOKENS.ground : TOKENS.muted}
-                      strokeWidth={1.5}
-                    />
-                    <Text
-                      style={[
-                        styles.spaceChipText,
-                        selecionado && styles.spaceChipTextActive,
-                      ]}
-                    >
-                      {formatarNomeEspaco(espaco)}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          )}
+          <SpaceSelectorRow
+            spaces={espacos}
+            selectedSpaceId={espacoSelecionadoId}
+            onSelectSpace={setEspacoSelecionadoId}
+          />
 
           {/* PASSO 4: CONFIRMAR E SALVAR ITEM */}
           <TouchableOpacity

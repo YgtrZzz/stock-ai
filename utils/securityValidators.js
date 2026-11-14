@@ -9,6 +9,48 @@ const MAX_BARCODE_LENGTH = 64;
 const MAX_QUANTITY_LIMIT = 99999;
 const DEFAULT_MAX_CSV_BYTES = 512 * 1024; // 512 KB
 const DEFAULT_MAX_CSV_LINES = 2500;
+const MAX_IMAGE_URI_LENGTH = 512;
+const ALLOWED_LOCAL_URI_PREFIXES = [
+  'file://',
+  'content://',
+  'ph://',
+  'assets-library://',
+  '/',
+];
+
+/**
+ * Valida e sanitiza URIs de imagem locais (câmera/sistema de arquivos),
+ * bloqueando esquemas remotos (http/https SSRF/tracking), javascript:, data: e Path Traversal (..).
+ *
+ * @param {unknown} rawUri
+ * @returns {string|null}
+ */
+export function sanitizeImageUriInput(rawUri) {
+  if (typeof rawUri !== 'string') return null;
+
+  const trimmed = rawUri.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!trimmed || trimmed.length > MAX_IMAGE_URI_LENGTH) return null;
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('javascript:') ||
+    lower.startsWith('data:') ||
+    lower.startsWith('ftp://') ||
+    trimmed.includes('..') ||
+    trimmed.includes('\\')
+  ) {
+    return null;
+  }
+
+  const hasAllowedPrefix = ALLOWED_LOCAL_URI_PREFIXES.some((prefix) =>
+    lower.startsWith(prefix)
+  );
+  if (!hasAllowedPrefix) return null;
+
+  return trimmed;
+}
 
 /**
  * Sanitiza e valida um código de barras (EAN-13, EAN-8, UPC, Code-128, QR Code de SKU).

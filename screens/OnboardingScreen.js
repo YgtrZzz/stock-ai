@@ -1,19 +1,54 @@
-import { memo } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { memo, useEffect, useRef } from 'react';
+import {
+  Animated,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Building2, ChevronRight, Home } from 'lucide-react-native';
 import { TOKENS } from '../utils/designTokens';
 
 /**
  * Tela de Onboarding Inicial memoizada (React.memo) para escolha do Perfil Operacional
- * ('home' vs 'business'), seguindo estritamente os tokens 'true-black-flat'.
+ * ('home' vs 'business'), seguindo estritamente os tokens 'true-black-flat' e estética shadcn/ui.
  */
 function OnboardingScreen({ onSelectProfile }) {
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(12)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 240,
+        useNativeDriver: true,
+      }),
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        friction: 8,
+        tension: 75,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [fadeAnim, slideAnim]);
+
   return (
     <View style={styles.onboardingScreen}>
       <StatusBar style="light" />
-      <View style={styles.onboardingContent}>
-        <Text style={styles.onboardingBrand}>Armário Digital</Text>
+      <Animated.View
+        style={[
+          styles.onboardingContent,
+          {
+            opacity: fadeAnim,
+            transform: [{ translateY: slideAnim }],
+          },
+        ]}
+      >
+        <View style={styles.brandPill}>
+          <Text style={styles.onboardingBrand}>Armário Digital</Text>
+        </View>
         <Text style={styles.onboardingTitle}>
           Como você vai usar o aplicativo?
         </Text>
@@ -29,7 +64,9 @@ function OnboardingScreen({ onSelectProfile }) {
             onPress={() => onSelectProfile('home')}
           >
             <View style={styles.onboardingCardHeader}>
-              <Home size={22} color={TOKENS.text} strokeWidth={1.5} />
+              <View style={styles.iconSlotNeutral}>
+                <Home size={20} color={TOKENS.text} strokeWidth={1.75} />
+              </View>
               <View style={styles.onboardingModePill}>
                 <Text style={styles.onboardingModePillText}>Uso Pessoal</Text>
               </View>
@@ -56,12 +93,14 @@ function OnboardingScreen({ onSelectProfile }) {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.onboardingCard}
+            style={[styles.onboardingCard, styles.onboardingCardBusiness]}
             activeOpacity={0.82}
             onPress={() => onSelectProfile('business')}
           >
             <View style={styles.onboardingCardHeader}>
-              <Building2 size={22} color={TOKENS.accent} strokeWidth={1.5} />
+              <View style={styles.iconSlotAccent}>
+                <Building2 size={20} color={TOKENS.accent} strokeWidth={1.75} />
+              </View>
               <View style={styles.onboardingModePillAccent}>
                 <Text style={styles.onboardingModePillAccentText}>
                   Estoque B2B
@@ -89,7 +128,7 @@ function OnboardingScreen({ onSelectProfile }) {
             </View>
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -106,11 +145,21 @@ const styles = StyleSheet.create({
     maxWidth: 460,
     alignSelf: 'center',
   },
+  brandPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: TOKENS.surface,
+    borderWidth: 1,
+    borderColor: TOKENS.raised,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: TOKENS.radiusControl,
+    marginBottom: 12,
+  },
   onboardingBrand: {
     color: TOKENS.muted,
-    fontSize: TOKENS.fsBody,
-    fontWeight: '500',
-    marginBottom: 8,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
   onboardingTitle: {
     color: TOKENS.text,
@@ -126,12 +175,17 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   onboardingCardsGroup: {
-    gap: TOKENS.gap,
+    gap: 12,
   },
   onboardingCard: {
     backgroundColor: TOKENS.surface,
     borderRadius: TOKENS.radiusCard,
+    borderWidth: 1,
+    borderColor: TOKENS.raised,
     padding: TOKENS.pad,
+  },
+  onboardingCardBusiness: {
+    borderColor: '#3f5713',
   },
   onboardingCardHeader: {
     flexDirection: 'row',
@@ -139,8 +193,28 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 14,
   },
+  iconSlotNeutral: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: TOKENS.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconSlotAccent: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: TOKENS.pillPositiveBg,
+    borderWidth: 1,
+    borderColor: '#3f5713',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   onboardingModePill: {
     backgroundColor: TOKENS.pillNeutralBg,
+    borderWidth: 1,
+    borderColor: TOKENS.raised,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: TOKENS.radiusControl,
@@ -152,6 +226,8 @@ const styles = StyleSheet.create({
   },
   onboardingModePillAccent: {
     backgroundColor: TOKENS.pillPositiveBg,
+    borderWidth: 1,
+    borderColor: '#3f5713',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: TOKENS.radiusControl,
@@ -160,6 +236,7 @@ const styles = StyleSheet.create({
     color: TOKENS.pillPositiveInk,
     fontSize: TOKENS.fsSmall,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   onboardingCardTitle: {
     color: TOKENS.text,
@@ -172,6 +249,7 @@ const styles = StyleSheet.create({
     fontSize: TOKENS.fsBody,
     lineHeight: 20,
     marginBottom: 18,
+    fontVariant: ['tabular-nums'],
   },
   onboardingActionRow: {
     flexDirection: 'row',
