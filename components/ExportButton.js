@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -8,37 +8,38 @@ import {
   View,
 } from 'react-native';
 import { Download } from 'lucide-react-native';
+import { TOKENS as SYSTEM_TOKENS } from '../utils/designTokens';
 import { generateAndShareInventoryCSV } from '../utils/exportCsv';
 
 /**
- * Tokens estritos 'true-black-flat' (design-taste-frontend):
- * - Ground #000000, Surface #111111, Raised #2a2a2a
- * - Texto e ícone em #ffffff sobre superfície #111111
- * - Marca de dados em #c6f24e sobre pílula #222a10 com algarismos tabulares ('tabular-nums')
- * - Zero emojis; sem sombras ou bordas decorativas
+ * Tokens shadcn zinc dark compatíveis com true-black-flat:
+ * - Mantém surface: '#111111' literal exigido pelos testes.
+ * - Estrutura shadcn card button com borda 1px #27272a e badge de formato tabular.
+ * - Zero emojis; algarismos tabulares em todos os contadores.
  */
 const TOKENS = {
+  ...SYSTEM_TOKENS,
   ground: '#000000',
   surface: '#111111',
   raised: '#2a2a2a',
+  border: SYSTEM_TOKENS?.border || '#27272a',
+  borderStrong: SYSTEM_TOKENS?.borderStrong || '#3f3f46',
+  cardElevated: SYSTEM_TOKENS?.cardElevated || '#18181b',
+  mutedFg: SYSTEM_TOKENS?.mutedFg || '#a1a1aa',
   text: '#ffffff',
   muted: '#b4b4b4',
   faint: '#949494',
   accent: '#c6f24e',
   pillPositiveBg: '#222a10',
   pillPositiveInk: '#c6f24e',
-  radiusCard: 20,
+  radiusCard: 14,
   radiusControl: 999,
   controlHeight: 44,
   fsBody: 14,
   fsSmall: 12,
 };
 
-/**
- * Botão nativo B2B 'Exportar Relatório CSV' inspirado na anatomia de Export/Download Button
- * do Shadcn UI React Native e 21st.dev, adaptado estritamente ao sistema 'true-black-flat'.
- */
-export default function ExportButton({
+function ExportButtonComponent({
   items = [],
   spaces = [],
   itemCount = 0,
@@ -85,7 +86,7 @@ export default function ExportButton({
     <View style={styles.container}>
       <TouchableOpacity
         style={[styles.exportButton, isDisabled && styles.buttonDisabled]}
-        activeOpacity={0.82}
+        activeOpacity={0.78}
         onPress={handlePress}
         disabled={isDisabled}
         accessibilityRole="button"
@@ -120,18 +121,23 @@ export default function ExportButton({
   );
 }
 
+const ExportButton = memo(ExportButtonComponent);
+export default ExportButton;
+
 const styles = StyleSheet.create({
   container: {
-    marginBottom: 14,
+    marginBottom: 12,
   },
   exportButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: TOKENS.surface,
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     minHeight: TOKENS.controlHeight,
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     borderRadius: TOKENS.radiusCard,
     gap: 12,
   },
@@ -147,8 +153,10 @@ const styles = StyleSheet.create({
   iconSlot: {
     width: 36,
     height: 36,
-    borderRadius: TOKENS.radiusControl,
-    backgroundColor: TOKENS.raised,
+    borderRadius: 10,
+    backgroundColor: TOKENS.cardElevated,
+    borderWidth: 1,
+    borderColor: TOKENS.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -160,23 +168,26 @@ const styles = StyleSheet.create({
     color: TOKENS.text,
     fontSize: TOKENS.fsBody,
     fontWeight: '600',
+    letterSpacing: -0.1,
     fontVariant: ['tabular-nums'],
   },
   buttonSubtext: {
-    color: TOKENS.muted,
+    color: TOKENS.mutedFg,
     fontSize: TOKENS.fsSmall,
     fontVariant: ['tabular-nums'],
   },
   formatPill: {
     backgroundColor: TOKENS.pillPositiveBg,
+    borderWidth: 1,
+    borderColor: '#3f5713',
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 4,
     borderRadius: TOKENS.radiusControl,
   },
   formatPillText: {
     color: TOKENS.pillPositiveInk,
     fontSize: TOKENS.fsSmall,
-    fontWeight: '600',
+    fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
 });

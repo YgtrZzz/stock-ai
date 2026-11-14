@@ -1,5 +1,6 @@
 export const CSV_FILENAME = 'Relatorio_Estoque.csv';
 export const MOVEMENTS_CSV_FILENAME = 'Relatorio_Movimentacoes.csv';
+export const FORECAST_CSV_FILENAME = 'Relatorio_Previsao_Compras.csv';
 
 export const CSV_HEADERS = [
   'ID',
@@ -291,5 +292,102 @@ export async function generateAndShareMovementsCSV(
     fileUri,
     csvContent,
     rowCount: Array.isArray(movements) ? movements.length : 0,
+  };
+}
+
+/**
+ * Constrói o conteúdo CSV do relatório de Previsão de Esgotamento e Compras.
+ */
+export function buildForecastCsvContent(forecastList = [], spaces = []) {
+  const spaceMap = new Map();
+  if (Array.isArray(spaces)) {
+    spaces.forEach((s) => {
+      if (s?.id) spaceMap.set(s.id, s.name);
+    });
+  }
+
+  const rows = [FORECAST_CSV_HEADERS.map(escapeCsvCell).join(';')];
+
+  if (Array.isArray(forecastList)) {
+    for (const item of forecastList) {
+      if (!item) continue;
+      const daysText =
+        item.daysRemaining === Infinity ? 'Estável' : String(item.daysRemaining);
+      const statusText =
+        item.urgencyStatus === 'out_of_stock'
+          ? 'Esgotado'
+          : item.urgencyStatus === 'critical'
+            ? 'Crítico (≤ 3d)'
+            : item.urgencyStatus === 'attention'
+              ? 'Atenção (≤ 7d)'
+              : item.urgencyStatus === 'dormant'
+                ? 'Sem Giro'
+                : 'Saudável';
+
+      const spaceName =
+        item.space_name ||
+        (item.space_id ? spaceMap.get(item.space_id) : '') ||
+        'Sem local';
+
+      rows.push(
+        [
+          item.id,
+          item.barcode || '',
+          item.name || '',
+          item.quantity ?? 0,
+          Number(item.dailyBurnRate ?? 0).toFixed(2),
+          daysText,
+          statusText,
+          item.suggestedRestockQty ?? 0,
+          item.abcClass || 'C',
+          spaceName,
+        ]
+          .map(escapeCsvCell)
+          .join(';')
+      );
+    }
+  }
+
+  return `${rows.join('\n')}\n`;
+}
+
+/**
+ * Gera e compartilha o Relatorio_Previsao_Compras.csv para PMEs.
+ */
+export async function generateAndSharePurchasingForecastCSV(
+  forecastList = [],
+  spaces = [],
+  adapters = {}
+) {
+  const FileSystem = await getFileSystemAdapter(adapters.fileSystem);
+
+  const csvContent = buildForecastCsvContent(forecastList, spaces);
+
+  const baseDir =
+    FileSystem.cacheDirectory || FileSystem.documentDirectory || '';
+  if (!baseDir) {
+    throw new Error(
+      'Diretório temporário indisponível para salvar o relatório de compras.'
+    );
+  }
+
+  const normalizedDir = baseDir.endsWith('/') ? baseDir : `${baseDir}/`;
+  const fileUri = `${normalizedDir}${FORECAST_CSV_FILENAME}`;
+
+  await FileSystem.writeAsStringAsync(fileUri, csvContent, {
+    encoding: FileSystem.EncodingType?.UTF8 || 'utf8',
+  });
+
+  await shareFileWithResilientFallback(
+    fileUri,
+    csvContent,
+    'Exportar Relatório de Previsão de Compras (CSV)',
+    adapters
+  );
+
+  return {
+    fileUri,
+    csvContent,
+    rowCount: Array.isArray(forecastList) ? forecastList.length : 0,
   };
 }

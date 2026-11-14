@@ -14,7 +14,7 @@ const LOTES_RAPIDOS_B2B = [1, 5, 10, 25];
 
 /**
  * Controle Memoizado de Passo 2 (Quantidade + Atalhos de Lote Rápido)
- * Evita re-renderização ao digitar o nome do produto no Passo 1.
+ * Estética shadcn/ui v4 + 21st.dev Magic Dark: input inset #09090b com borda 1px #27272a e pílulas táticas.
  */
 function QuantityStepperControlComponent({
   quantity,
@@ -24,11 +24,11 @@ function QuantityStepperControlComponent({
   disabled = false,
 }) {
   return (
-    <View>
+    <View style={styles.wrapper}>
       <View style={styles.qtyStepperRow}>
         <TouchableOpacity
           style={styles.qtyStepButton}
-          activeOpacity={0.78}
+          activeOpacity={0.75}
           onPress={() => onAdjustQuantity(-1)}
           disabled={disabled}
         >
@@ -54,18 +54,18 @@ function QuantityStepperControlComponent({
           onPress={() => onAdjustQuantity(1)}
           disabled={disabled}
         >
-          <Plus size={18} color={TOKENS.ground} strokeWidth={2} />
+          <Plus size={18} color={TOKENS.ground} strokeWidth={2.25} />
         </TouchableOpacity>
       </View>
 
       <View style={styles.batchControlsRow}>
-        <Text style={styles.batchLabel}>Atalhos de qtd:</Text>
+        <Text style={styles.batchLabel}>Lote rápido</Text>
         <View style={styles.batchPillsGroup}>
           {LOTES_RAPIDOS_B2B.map((valor) => (
             <TouchableOpacity
               key={valor}
               style={styles.batchPill}
-              activeOpacity={0.78}
+              activeOpacity={0.75}
               onPress={() => onAddBatch(valor)}
               disabled={disabled}
             >
@@ -74,11 +74,11 @@ function QuantityStepperControlComponent({
           ))}
           <TouchableOpacity
             style={styles.batchPillReset}
-            activeOpacity={0.78}
+            activeOpacity={0.75}
             onPress={() => onChangeQuantity('1')}
             disabled={disabled}
           >
-            <Text style={styles.batchPillResetText}>1 un.</Text>
+            <Text style={styles.batchPillResetText}>Reset (1)</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -90,16 +90,19 @@ const QuantityStepperControl = memo(QuantityStepperControlComponent);
 export default QuantityStepperControl;
 
 const styles = StyleSheet.create({
+  wrapper: {
+    marginBottom: 14,
+  },
   input: {
-    backgroundColor: TOKENS.surfaceAlt,
+    backgroundColor: '#09090b',
     borderWidth: 1,
-    borderColor: TOKENS.rule,
+    borderColor: '#27272a',
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 13,
+    paddingVertical: 11,
     color: TOKENS.text,
     fontSize: 15,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   qtyStepperRow: {
     flexDirection: 'row',
@@ -107,30 +110,33 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   qtyStepButton: {
-    width: 48,
-    height: 48,
+    width: 46,
+    height: 46,
     borderRadius: 12,
-    backgroundColor: TOKENS.surfaceAlt,
+    backgroundColor: '#18181b',
     borderWidth: 1,
-    borderColor: TOKENS.ruleStrong,
+    borderColor: '#27272a',
     alignItems: 'center',
     justifyContent: 'center',
   },
   qtyStepButtonPrimary: {
-    width: 48,
-    height: 48,
+    width: 46,
+    height: 46,
     borderRadius: 12,
-    backgroundColor: TOKENS.text,
+    backgroundColor: TOKENS.accent,
+    borderWidth: 1,
+    borderColor: '#d8f870',
     alignItems: 'center',
     justifyContent: 'center',
   },
   qtyStepperInput: {
     flex: 1,
+    height: 46,
     textAlign: 'center',
     fontSize: 18,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
-    paddingVertical: 11,
+    paddingVertical: 0,
   },
   batchControlsRow: {
     flexDirection: 'row',
@@ -141,9 +147,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   batchLabel: {
-    color: TOKENS.muted,
-    fontSize: 12,
-    fontWeight: '500',
+    color: TOKENS.faint,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   batchPillsGroup: {
     flexDirection: 'row',
@@ -151,12 +159,12 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   batchPill: {
-    backgroundColor: TOKENS.surfaceAlt,
+    backgroundColor: '#18181b',
     borderWidth: 1,
-    borderColor: TOKENS.rule,
+    borderColor: '#27272a',
     paddingHorizontal: 11,
     paddingVertical: 6,
-    borderRadius: 999,
+    borderRadius: 8,
   },
   batchPillText: {
     color: TOKENS.text,
@@ -165,17 +173,17 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   batchPillReset: {
-    backgroundColor: TOKENS.ground,
+    backgroundColor: '#09090b',
     borderWidth: 1,
-    borderColor: TOKENS.rule,
+    borderColor: '#27272a',
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 999,
+    borderRadius: 8,
   },
   batchPillResetText: {
     color: TOKENS.muted,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     fontVariant: ['tabular-nums'],
   },
 });

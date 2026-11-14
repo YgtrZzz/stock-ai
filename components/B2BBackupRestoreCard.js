@@ -11,8 +11,8 @@ import { Check, Layers, RefreshCw } from 'lucide-react-native';
 import { TOKENS } from '../utils/designTokens';
 
 /**
- * Painel B2B de Backup & Restauração Integral Assinada (JSON com Checksum de Integridade).
- * Segue estritamente 'true-black-flat', 'tabular-nums' e zero emojis.
+ * Painel B2B no padrão shadcn/ui zinc dark para Backup & Restauração JSON com Checksum.
+ * Bordas 1px #27272a, input inset #09090b, botões estruturados, tabular-nums e zero emojis.
  */
 function B2BBackupRestoreCard({
   spacesCount = 0,
@@ -39,9 +39,9 @@ function B2BBackupRestoreCard({
     <View style={styles.card}>
       <View style={styles.headerRow}>
         <View style={styles.titleCol}>
-          <Text style={styles.title}>Backup Seguro & Restauração (JSON)</Text>
+          <Text style={styles.title}>Backup Seguro & Restauração</Text>
           <Text style={styles.subtitle}>
-            {spacesCount} locais · {itemsCount} SKUs · Assinatura de integridade
+            {spacesCount} locais · {itemsCount} SKUs · Checksum SHA-256
           </Text>
         </View>
 
@@ -51,7 +51,7 @@ function B2BBackupRestoreCard({
               styles.exportPillButton,
               exporting && styles.controlDisabled,
             ]}
-            activeOpacity={0.82}
+            activeOpacity={0.8}
             onPress={onExportBackup}
             disabled={exporting}
           >
@@ -59,7 +59,7 @@ function B2BBackupRestoreCard({
               <ActivityIndicator size="small" color={TOKENS.ground} />
             ) : (
               <>
-                <Layers size={13} color={TOKENS.ground} strokeWidth={1.75} />
+                <Layers size={13} color={TOKENS.ground} strokeWidth={2} />
                 <Text style={styles.exportPillText}>Backup</Text>
               </>
             )}
@@ -70,7 +70,7 @@ function B2BBackupRestoreCard({
               styles.togglePillButton,
               expanded && styles.togglePillButtonActive,
             ]}
-            activeOpacity={0.82}
+            activeOpacity={0.8}
             onPress={() => setExpanded((prev) => !prev)}
           >
             <RefreshCw
@@ -93,7 +93,7 @@ function B2BBackupRestoreCard({
       {expanded && (
         <View style={styles.body}>
           <Text style={styles.hint}>
-            Cole abaixo o conteúdo de um arquivo Backup_ArmarioDigital.json. O
+            Cole abaixo o conteúdo do arquivo Backup_ArmarioDigital.json. O
             checksum criptográfico será validado antes de sincronizar espaços e
             SKUs.
           </Text>
@@ -113,7 +113,7 @@ function B2BBackupRestoreCard({
               styles.restoreSubmitPill,
               (!backupJsonText.trim() || restoring) && styles.controlDisabled,
             ]}
-            activeOpacity={0.85}
+            activeOpacity={0.82}
             onPress={handleRestorePress}
             disabled={!backupJsonText.trim() || restoring}
           >
@@ -121,7 +121,7 @@ function B2BBackupRestoreCard({
               <ActivityIndicator size="small" color={TOKENS.ground} />
             ) : (
               <View style={styles.inlineRow}>
-                <Check size={15} color={TOKENS.ground} strokeWidth={2} />
+                <Check size={15} color={TOKENS.ground} strokeWidth={2.25} />
                 <Text style={styles.restoreSubmitText}>
                   Validar Checksum e Restaurar Backup
                 </Text>
@@ -137,8 +137,10 @@ function B2BBackupRestoreCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
-    padding: 18,
+    borderWidth: 1,
+    borderColor: TOKENS.border || '#27272a',
+    borderRadius: 14,
+    padding: 16,
     marginBottom: TOKENS.gap,
   },
   headerRow: {
@@ -155,9 +157,10 @@ const styles = StyleSheet.create({
     color: TOKENS.text,
     fontSize: TOKENS.fsBody,
     fontWeight: '600',
+    letterSpacing: -0.2,
   },
   subtitle: {
-    color: TOKENS.muted,
+    color: TOKENS.mutedFg || TOKENS.muted,
     fontSize: TOKENS.fsSmall,
     fontVariant: ['tabular-nums'],
   },
@@ -171,9 +174,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     backgroundColor: TOKENS.text,
-    height: 36,
+    height: 34,
     paddingHorizontal: 12,
-    borderRadius: TOKENS.radiusControl,
+    borderRadius: 8,
   },
   exportPillText: {
     color: TOKENS.ground,
@@ -184,13 +187,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: TOKENS.raised,
-    height: 36,
+    backgroundColor: TOKENS.cardElevated || '#18181b',
+    borderWidth: 1,
+    borderColor: TOKENS.borderStrong || '#3f3f46',
+    height: 34,
     paddingHorizontal: 12,
-    borderRadius: TOKENS.radiusControl,
+    borderRadius: 8,
   },
   togglePillButtonActive: {
     backgroundColor: TOKENS.text,
+    borderColor: TOKENS.text,
   },
   togglePillText: {
     color: TOKENS.text,
@@ -204,30 +210,32 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border || '#27272a',
     gap: 10,
   },
   hint: {
-    color: TOKENS.faint,
+    color: TOKENS.mutedFg || TOKENS.faint,
     fontSize: TOKENS.fsSmall,
     lineHeight: 18,
     fontVariant: ['tabular-nums'],
   },
   jsonInput: {
-    backgroundColor: TOKENS.raised,
+    backgroundColor: TOKENS.input || '#09090b',
+    borderWidth: 1,
+    borderColor: TOKENS.border || '#27272a',
     color: TOKENS.text,
     fontSize: TOKENS.fsSmall,
     fontVariant: ['tabular-nums'],
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     minHeight: 84,
     textAlignVertical: 'top',
   },
   restoreSubmitPill: {
     backgroundColor: TOKENS.text,
     height: 38,
-    borderRadius: TOKENS.radiusControl,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,

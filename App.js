@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -145,6 +146,34 @@ const TEMA = {
 
 const formatarNomeEspaco = formatSpaceHierarchyName;
 
+// Props nativas estáveis (referência fixa) evitam re-sincronizar a CameraView a cada tecla digitada
+const BARCODE_SCANNER_SETTINGS_B2B = Object.freeze({
+  barcodeTypes: ['qr', 'ean13', 'ean8', 'upc_a', 'upc_e', 'code128'],
+});
+
+// Resolução-alvo de captura: ~2 MP (4:3) basta para o reconhecimento visual e o YOLO 640px,
+// reduzindo o JPEG/base64 de ~1,3 MB (12 MP) para ~250 KB e acelerando a análise em ~4x.
+const TARGET_CAPTURE_WIDTH = 1600;
+
+function escolherResolucaoCaptura(sizes) {
+  if (!Array.isArray(sizes) || sizes.length === 0) return undefined;
+  const candidatos = sizes
+    .map((s) => {
+      const m = /^(\d+)x(\d+)$/.exec(String(s));
+      if (!m) return null;
+      const w = Math.max(Number(m[1]), Number(m[2]));
+      const h = Math.min(Number(m[1]), Number(m[2]));
+      return { s, w, h, ratio: w / h };
+    })
+    .filter((c) => c && Math.abs(c.ratio - 4 / 3) < 0.02 && c.w >= 1024);
+  if (candidatos.length === 0) return undefined;
+  candidatos.sort(
+    (a, b) =>
+      Math.abs(a.w - TARGET_CAPTURE_WIDTH) - Math.abs(b.w - TARGET_CAPTURE_WIDTH)
+  );
+  return candidatos[0].s;
+}
+
 /* ==========================================================
    ABA 1: SCANNER (Adaptação Dinâmica: 'home' vs 'business')
    ========================================================== */
@@ -174,8 +203,21 @@ function ScannerScreen({ onInventoryUpdated }) {
   const [espacos, setEspacos] = useState([]);
   const [espacoSelecionadoId, setEspacoSelecionadoId] = useState(null);
   const [aGuardar, setAGuardar] = useState(false);
+  const [captureSize, setCaptureSize] = useState(undefined);
 
   const isFocused = useIsFocused();
+
+  // Seleciona uma única vez a resolução de captura ~2 MP (4:3) suportada pelo sensor
+  const handleCameraReady = useCallback(async () => {
+    if (captureSize) return;
+    try {
+      const sizes = await cameraRef.current?.getAvailablePictureSizesAsync?.();
+      const escolhida = escolherResolucaoCaptura(sizes);
+      if (escolhida) setCaptureSize(escolhida);
+    } catch {
+      // Mantém a resolução padrão do dispositivo caso a consulta não seja suportada
+    }
+  }, [captureSize]);
 
   useFocusEffect(
     useCallback(() => {
@@ -191,7 +233,6 @@ function ScannerScreen({ onInventoryUpdated }) {
             }
             return null;
           });
-          await backfillVisualSignatures(computeVisualSignature);
         } catch (error) {
           console.error('Erro ao carregar espaços no Scanner:', error);
         }
@@ -255,7 +296,11 @@ function ScannerScreen({ onInventoryUpdated }) {
       });
       if (foto?.uri) {
         setCapturedImage(foto.uri);
+        setACapturarFoto(false);
         Vibration.vibrate(80);
+
+        // Libera um frame de UI (60 FPS) para exibir a foto instantaneamente antes do processamento IA
+        await new Promise((resolve) => setTimeout(resolve, 24));
 
         const modeloTflite =
           yoloPlugin.state === 'loaded' ? yoloPlugin.model : null;
@@ -288,7 +333,6 @@ function ScannerScreen({ onInventoryUpdated }) {
         setCapturedVisualSignature(novaAssinatura);
 
         if (novaAssinatura) {
-          await backfillVisualSignatures(computeVisualSignature);
           const itensCadastrados = await getItems('');
           const matchVisual = findBestVisualMatch(
             novaAssinatura,
@@ -509,19 +553,10 @@ function ScannerScreen({ onInventoryUpdated }) {
           ref={cameraRef}
           style={styles.camera}
           facing="back"
+          pictureSize={captureSize}
+          onCameraReady={handleCameraReady}
           barcodeScannerSettings={
-            isBusiness
-              ? {
-                  barcodeTypes: [
-                    'qr',
-                    'ean13',
-                    'ean8',
-                    'upc_a',
-                    'upc_e',
-                    'code128',
-                  ],
-                }
-              : undefined
+            isBusiness ? BARCODE_SCANNER_SETTINGS_B2B : undefined
           }
           onBarcodeScanned={isBusiness ? handleBarcodeScanned : undefined}
         />
@@ -2662,6 +2697,10 @@ export default function App() {
         if (savedProfile === 'home' || savedProfile === 'business') {
           setUserProfile(savedProfile);
         }
+        // Backfill assíncrono em background após liberar a UI inicial (evita travar troca de abas)
+        setTimeout(() => {
+          backfillVisualSignatures(computeVisualSignature).catch(() => {});
+        }, 400);
       } catch (error) {
         console.error('Erro na inicialização do aplicativo:', error);
       } finally {
@@ -2711,17 +2750,20 @@ export default function App() {
         <StatusBar style="light" />
         <Tab.Navigator
           screenOptions={{
+            lazy: true,
+            freezeOnBlur: true,
             headerStyle: {
-              backgroundColor: TOKENS.ground,
+              backgroundColor: '#09090b',
               elevation: 0,
               shadowOpacity: 0,
               borderBottomWidth: 1,
-              borderBottomColor: TOKENS.rule,
+              borderBottomColor: '#27272a',
             },
             headerTintColor: TOKENS.text,
             headerTitleStyle: {
               fontSize: TOKENS.fsTitle,
-              fontWeight: '600',
+              fontWeight: '700',
+              letterSpacing: -0.3,
               color: TOKENS.text,
             },
             headerRight: () => (
@@ -2731,27 +2773,31 @@ export default function App() {
                 onPress={resetProfile}
               >
                 {isHome ? (
-                  <Home size={13} color={TOKENS.muted} strokeWidth={1.5} />
+                  <Home size={13} color={TOKENS.accent} strokeWidth={1.75} />
                 ) : (
-                  <Building2 size={13} color={TOKENS.accent} strokeWidth={1.5} />
+                  <Building2 size={13} color={TOKENS.accent} strokeWidth={1.75} />
                 )}
                 <Text style={styles.headerProfileSwitchText}>
                   {isHome ? 'Casa' : 'Negócio'}
                 </Text>
-                <RefreshCw size={11} color={TOKENS.faint} strokeWidth={1.5} />
+                <RefreshCw size={11} color={TOKENS.muted} strokeWidth={1.5} />
               </TouchableOpacity>
             ),
-            // Regra 'true-black-flat': item ativo marcado apenas por luminosidade (#b4b4b4 -> #ffffff)
-            tabBarActiveTintColor: TOKENS.text,
+            // Estética shadcn/ui + 21st.dev Magic Dark: aba ativa em verde-neon #c6f24e
+            tabBarActiveTintColor: TOKENS.accent,
             tabBarInactiveTintColor: TOKENS.muted,
             tabBarLabelStyle: {
-              fontSize: TOKENS.fsSmall,
-              fontWeight: '500',
+              fontSize: 11,
+              fontWeight: '600',
+              letterSpacing: 0.1,
             },
             tabBarStyle: {
-              backgroundColor: TOKENS.ground,
+              backgroundColor: '#09090b',
               borderTopWidth: 1,
-              borderTopColor: TOKENS.rule,
+              borderTopColor: '#27272a',
+              height: 60,
+              paddingTop: 6,
+              paddingBottom: 8,
               elevation: 0,
             },
           }}
@@ -2900,6 +2946,8 @@ const styles = StyleSheet.create({
 
   // Botão de troca rápida de perfil no cabeçalho
   headerProfileSwitch: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -2924,10 +2972,12 @@ const styles = StyleSheet.create({
     paddingBottom: 150,
   },
   cameraStageCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     marginHorizontal: 14,
     marginTop: 10,
     marginBottom: 12,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     backgroundColor: TOKENS.surface,
     padding: 12,
     gap: 10,
@@ -2995,6 +3045,8 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   capturedDockSecondaryBtn: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
@@ -3168,8 +3220,10 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   scannerSheet: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     marginHorizontal: 14,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     padding: TOKENS.pad,
     backgroundColor: TOKENS.surface,
   },
@@ -3181,6 +3235,8 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   stepNumberBadge: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     width: 22,
     height: 22,
     borderRadius: 999,
@@ -3229,6 +3285,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scannedBarcodeBanner: {
+    borderWidth: 1,
+    borderColor: TOKENS.borderPositive,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -3257,6 +3315,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   businessCameraPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.raised,
     height: TOKENS.controlHeight,
     paddingHorizontal: 14,
@@ -3270,6 +3330,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   capturedPreviewContainer: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: TOKENS.raised,
@@ -3327,6 +3389,8 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   qtyStepButton: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     width: 44,
     height: 44,
     borderRadius: 14,
@@ -3380,6 +3444,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   batchPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.raised,
     paddingVertical: 5,
     paddingHorizontal: 11,
@@ -3410,7 +3476,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   input: {
-    backgroundColor: TOKENS.raised,
+    borderWidth: 1,
+    borderColor: TOKENS.border,
+    backgroundColor: TOKENS.input,
     color: TOKENS.text,
     fontSize: TOKENS.fsBody,
     paddingVertical: 10,
@@ -3425,6 +3493,8 @@ const styles = StyleSheet.create({
     paddingBottom: TOKENS.gap,
   },
   spaceChip: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -3446,6 +3516,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   noSpacesBox: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.raised,
     borderRadius: 12,
     padding: 12,
@@ -3517,10 +3589,12 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: TOKENS.ground,
     borderBottomWidth: 1,
-    borderBottomColor: TOKENS.rule,
+    borderBottomColor: TOKENS.border,
     gap: TOKENS.gap,
   },
   secondaryPillButton: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -3547,10 +3621,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   spaceFormCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     marginTop: TOKENS.gap,
     padding: TOKENS.pad,
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
   },
   spaceFormHeaderRow: {
     flexDirection: 'row',
@@ -3613,8 +3689,10 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   spaceCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     marginBottom: TOKENS.gap,
     overflow: 'hidden',
   },
@@ -3627,6 +3705,8 @@ const styles = StyleSheet.create({
     borderColor: '#262626',
   },
   spaceThumbFallback: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     width: 56,
     height: 56,
     borderRadius: 14,
@@ -3644,7 +3724,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border,
     gap: 10,
   },
   spaceSavedItemsHeaderRow: {
@@ -3660,8 +3740,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   spaceSavedItemsEmptyCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     padding: 20,
     alignItems: 'center',
     gap: 6,
@@ -3679,6 +3761,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   spaceSavedItemCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -3696,6 +3780,8 @@ const styles = StyleSheet.create({
     borderColor: '#262626',
   },
   spaceSavedItemThumbFallback: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     width: 52,
     height: 52,
     borderRadius: 12,
@@ -3713,6 +3799,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   spacePhotoActionPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -3742,6 +3830,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   neutralDataPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.pillNeutralBg,
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -3760,10 +3850,12 @@ const styles = StyleSheet.create({
     paddingTop: TOKENS.gap,
   },
   kpiStrip: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     paddingVertical: 16,
   },
   kpiCell: {
@@ -3773,7 +3865,7 @@ const styles = StyleSheet.create({
   kpiDivider: {
     width: 1,
     alignSelf: 'stretch',
-    backgroundColor: TOKENS.rule,
+    backgroundColor: TOKENS.border,
   },
   kpiLabel: {
     color: TOKENS.muted,
@@ -3808,9 +3900,11 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
   },
   searchInputWrapper: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: TOKENS.surface,
+    backgroundColor: TOKENS.input,
     borderRadius: TOKENS.radiusControl,
     paddingHorizontal: 16,
     height: 42,
@@ -3832,6 +3926,8 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   stockFilterPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.surface,
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -3841,6 +3937,8 @@ const styles = StyleSheet.create({
     backgroundColor: TOKENS.text,
   },
   stockFilterPillWarningActive: {
+    borderWidth: 1,
+    borderColor: '#4a3810',
     backgroundColor: TOKENS.pillWarningBg,
   },
   stockFilterPillText: {
@@ -3856,8 +3954,10 @@ const styles = StyleSheet.create({
     color: TOKENS.pillWarningInk,
   },
   csvImportCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     padding: 18,
     marginBottom: TOKENS.gap,
   },
@@ -3904,7 +4004,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border,
     gap: 10,
   },
   csvImportHint: {
@@ -3931,7 +4031,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: TOKENS.rule,
+    borderBottomColor: TOKENS.border,
   },
   auditLogLeftCol: {
     flex: 1,
@@ -3978,8 +4078,10 @@ const styles = StyleSheet.create({
     padding: TOKENS.pad,
   },
   inventoryCard: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
+    borderRadius: 16,
     marginBottom: TOKENS.gap,
     overflow: 'hidden',
   },
@@ -3995,6 +4097,8 @@ const styles = StyleSheet.create({
     borderColor: '#262626',
   },
   itemThumbFallback: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     width: 64,
     height: 64,
     borderRadius: 16,
@@ -4025,6 +4129,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   locationPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -4039,6 +4145,8 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   barcodeMetaPill: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -4070,9 +4178,13 @@ const styles = StyleSheet.create({
     borderRadius: TOKENS.radiusControl,
   },
   quantityPillPositive: {
+    borderWidth: 1,
+    borderColor: TOKENS.borderPositive,
     backgroundColor: TOKENS.pillPositiveBg,
   },
   quantityPillWarning: {
+    borderWidth: 1,
+    borderColor: '#4a3810',
     backgroundColor: TOKENS.pillWarningBg,
   },
   quantityPillValue: {
@@ -4094,7 +4206,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border,
     gap: 8,
   },
   inlineEditLabel: {
@@ -4115,6 +4227,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   chip: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -4151,7 +4265,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border,
     gap: 8,
   },
   qtyActionsGroup: {
@@ -4160,6 +4274,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   actionPillButton: {
+    borderWidth: 1,
+    borderColor: TOKENS.border,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -4190,6 +4306,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   actionPillButtonDelete: {
+    borderWidth: 1,
+    borderColor: '#4a1c18',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',

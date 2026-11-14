@@ -11,7 +11,8 @@ import { Check, Layers } from 'lucide-react-native';
 import { TOKENS } from '../utils/designTokens';
 
 /**
- * Painel B2B memoizado (React.memo) para Importação em Lote de Catálogo CSV/ERP.
+ * Painel B2B no padrão shadcn/ui zinc dark para Importação em Lote CSV/ERP.
+ * Borda 1px #27272a, input inset #09090b com visual terminal/código e botão de lote.
  */
 function CsvBulkImportCard({
   expanded = false,
@@ -37,7 +38,7 @@ function CsvBulkImportCard({
           onPress={onToggleExpand}
         >
           <Layers
-            size={14}
+            size={13}
             color={expanded ? TOKENS.ground : TOKENS.text}
             strokeWidth={1.75}
           />
@@ -71,7 +72,7 @@ function CsvBulkImportCard({
               styles.submitPill,
               (!csvText.trim() || importing) && styles.controlDisabled,
             ]}
-            activeOpacity={0.85}
+            activeOpacity={0.82}
             onPress={onSubmitImport}
             disabled={!csvText.trim() || importing}
           >
@@ -79,7 +80,7 @@ function CsvBulkImportCard({
               <ActivityIndicator size="small" color={TOKENS.ground} />
             ) : (
               <View style={styles.inlineRow}>
-                <Check size={16} color={TOKENS.ground} strokeWidth={2} />
+                <Check size={15} color={TOKENS.ground} strokeWidth={2.25} />
                 <Text style={styles.submitPillText}>Processar Lote CSV</Text>
               </View>
             )}
@@ -93,8 +94,10 @@ function CsvBulkImportCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
-    padding: 18,
+    borderWidth: 1,
+    borderColor: TOKENS.border || '#27272a',
+    borderRadius: 14,
+    padding: 16,
     marginBottom: TOKENS.gap,
   },
   headerRow: {
@@ -111,22 +114,26 @@ const styles = StyleSheet.create({
     color: TOKENS.text,
     fontSize: TOKENS.fsBody,
     fontWeight: '600',
+    letterSpacing: -0.2,
   },
   subtitle: {
-    color: TOKENS.muted,
+    color: TOKENS.mutedFg || TOKENS.muted,
     fontSize: TOKENS.fsSmall,
   },
   togglePill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: TOKENS.raised,
-    height: 36,
-    paddingHorizontal: 14,
-    borderRadius: TOKENS.radiusControl,
+    backgroundColor: TOKENS.cardElevated || '#18181b',
+    borderWidth: 1,
+    borderColor: TOKENS.borderStrong || '#3f3f46',
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 8,
   },
   togglePillActive: {
     backgroundColor: TOKENS.text,
+    borderColor: TOKENS.text,
   },
   toggleText: {
     color: TOKENS.text,
@@ -140,37 +147,39 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border || '#27272a',
     gap: 10,
   },
   hint: {
-    color: TOKENS.faint,
+    color: TOKENS.mutedFg || TOKENS.faint,
     fontSize: TOKENS.fsSmall,
     lineHeight: 18,
     fontVariant: ['tabular-nums'],
   },
   input: {
-    backgroundColor: TOKENS.raised,
+    backgroundColor: TOKENS.input || '#09090b',
+    borderWidth: 1,
+    borderColor: TOKENS.border || '#27272a',
     color: TOKENS.text,
     fontSize: TOKENS.fsSmall,
     fontVariant: ['tabular-nums'],
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     minHeight: 88,
     textAlignVertical: 'top',
   },
   submitPill: {
     backgroundColor: TOKENS.text,
-    height: TOKENS.controlHeight,
-    paddingHorizontal: 18,
-    borderRadius: TOKENS.radiusControl,
+    height: 38,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 16,
   },
   submitPillText: {
     color: TOKENS.ground,
-    fontSize: TOKENS.fsBody,
+    fontSize: TOKENS.fsSmall,
     fontWeight: '600',
   },
   inlineRow: {

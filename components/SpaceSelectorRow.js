@@ -21,6 +21,7 @@ export function formatSpaceHierarchyName(espaco) {
 
 /**
  * Seletor Horizontal Memoizado de Locais de Armazenagem (Passo 3 do Scanner)
+ * Estilo shadcn/ui v4 Badge / ToggleGroup com bordas 1px #27272a e estado ativo em destaque.
  */
 function SpaceSelectorRowComponent({
   spaces = [],
@@ -50,7 +51,7 @@ function SpaceSelectorRowComponent({
           styles.spaceChip,
           selectedSpaceId === null && styles.spaceChipActive,
         ]}
-        activeOpacity={0.8}
+        activeOpacity={0.78}
         onPress={() => onSelectSpace(null)}
       >
         <Text
@@ -69,13 +70,13 @@ function SpaceSelectorRowComponent({
           <TouchableOpacity
             key={espaco.id}
             style={[styles.spaceChip, selecionado && styles.spaceChipActive]}
-            activeOpacity={0.8}
+            activeOpacity={0.78}
             onPress={() => onSelectSpace(espaco.id)}
           >
             <MapPin
               size={13}
-              color={selecionado ? TOKENS.ground : TOKENS.muted}
-              strokeWidth={1.5}
+              color={selecionado ? TOKENS.pillPositiveInk : TOKENS.muted}
+              strokeWidth={1.75}
             />
             <Text
               style={[
@@ -99,38 +100,40 @@ const styles = StyleSheet.create({
   selectorRow: {
     flexDirection: 'row',
     gap: 8,
-    paddingVertical: 4,
+    paddingTop: 2,
+    paddingBottom: 14,
   },
   spaceChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: TOKENS.surfaceAlt,
+    backgroundColor: '#09090b',
     borderWidth: 1,
-    borderColor: TOKENS.rule,
+    borderColor: '#27272a',
     paddingHorizontal: 14,
     paddingVertical: 9,
-    borderRadius: 999,
+    borderRadius: 10,
   },
   spaceChipActive: {
-    backgroundColor: TOKENS.text,
-    borderColor: TOKENS.text,
+    backgroundColor: TOKENS.pillPositiveBg,
+    borderColor: '#3f5713',
   },
   spaceChipText: {
     color: TOKENS.muted,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   spaceChipTextActive: {
-    color: TOKENS.ground,
+    color: TOKENS.pillPositiveInk,
     fontWeight: '700',
   },
   noSpacesBox: {
-    backgroundColor: TOKENS.surfaceAlt,
+    backgroundColor: '#09090b',
     borderWidth: 1,
-    borderColor: TOKENS.rule,
+    borderColor: '#27272a',
     borderRadius: 12,
     padding: 12,
+    marginBottom: 14,
   },
   noSpacesText: {
     color: TOKENS.muted,

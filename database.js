@@ -221,6 +221,7 @@ export async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_items_space ON items(space_id);
         CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
         CREATE INDEX IF NOT EXISTS idx_movements_item ON stock_movements(item_id);
+        CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at);
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);
 
@@ -973,6 +974,26 @@ export async function getStockMovements(limit = 40) {
      ORDER BY id DESC
      LIMIT ?;`,
     [safeLimit]
+  );
+}
+
+/**
+ * Retorna as movimentações dos últimos N dias para cálculo de giro, burn rate e previsão de esgotamento.
+ *
+ * @param {number} [windowDays=30]
+ * @returns {Promise<Array<{ id: number, item_id: number|null, item_name: string, barcode: string|null, delta: number, previous_qty: number, new_qty: number, reason: string, created_at: string }>>}
+ */
+export async function getMovementsForForecast(windowDays = 30) {
+  const safeDays = Math.max(1, Math.min(365, parseInt(windowDays, 10) || 30));
+  const cutoffIso = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const db = await initDatabase();
+  return db.getAllAsync(
+    `SELECT id, item_id, item_name, barcode, delta, previous_qty, new_qty, reason, created_at
+     FROM stock_movements
+     WHERE created_at >= ?
+     ORDER BY id DESC;`,
+    [cutoffIso]
   );
 }
 

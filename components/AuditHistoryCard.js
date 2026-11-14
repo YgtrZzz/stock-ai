@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -10,53 +10,77 @@ import { RefreshCw } from 'lucide-react-native';
 import { TOKENS } from '../utils/designTokens';
 
 /**
- * Painel B2B memoizado (React.memo) de Histórico Auditável de Movimentações de Estoque.
+ * Painel B2B no padrão shadcn/ui zinc dark de Histórico Auditável de Movimentações.
+ * Bordas 1px #27272a, badges refinados com borda contrastante e números tabulares.
  */
 function AuditHistoryCard({
+  stockMovements,
   movements = [],
-  expanded = false,
+  expanded: controlledExpanded,
   onToggleExpand,
   exporting = false,
+  onExportMovements,
   onExportCsv,
+  formatarData,
   formatDate,
 }) {
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const isExpanded =
+    typeof controlledExpanded === 'boolean'
+      ? controlledExpanded
+      : internalExpanded;
+
+  const handleToggle = () => {
+    if (typeof onToggleExpand === 'function') {
+      onToggleExpand();
+    } else {
+      setInternalExpanded((prev) => !prev);
+    }
+  };
+
+  const handleExport = onExportMovements || onExportCsv;
+  const formatFn = formatarData || formatDate;
+  const list = Array.isArray(stockMovements) ? stockMovements : movements;
+
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
         <View style={styles.titleBlock}>
           <Text style={styles.title}>Histórico de Movimentações</Text>
           <Text style={styles.subtitle}>
-            {movements.length}{' '}
-            {movements.length === 1
+            {list.length}{' '}
+            {list.length === 1
               ? 'registro auditável recente'
               : 'registros auditáveis recentes'}
           </Text>
         </View>
 
         <TouchableOpacity
-          style={[styles.togglePill, expanded && styles.togglePillActive]}
+          style={[styles.togglePill, isExpanded && styles.togglePillActive]}
           activeOpacity={0.8}
-          onPress={onToggleExpand}
+          onPress={handleToggle}
         >
           <RefreshCw
             size={13}
-            color={expanded ? TOKENS.ground : TOKENS.text}
+            color={isExpanded ? TOKENS.ground : TOKENS.text}
             strokeWidth={1.75}
           />
-          <Text style={[styles.toggleText, expanded && styles.toggleTextActive]}>
-            {expanded ? 'Ocultar' : 'Auditoria'}
+          <Text
+            style={[styles.toggleText, isExpanded && styles.toggleTextActive]}
+          >
+            {isExpanded ? 'Ocultar' : 'Auditoria'}
           </Text>
         </TouchableOpacity>
       </View>
 
-      {expanded && (
+      {isExpanded && (
         <View style={styles.body}>
-          {movements.length === 0 ? (
+          {list.length === 0 ? (
             <Text style={styles.hint}>
               Nenhuma movimentação registrada ainda.
             </Text>
           ) : (
-            movements.slice(0, 12).map((mov) => {
+            list.slice(0, 12).map((mov) => {
               const isPositive = Number(mov.delta) >= 0;
               const deltaFormatted = isPositive
                 ? `+${mov.delta}`
@@ -81,8 +105,8 @@ function AuditHistoryCard({
                     <Text style={styles.auditMetaText}>
                       {reasonLabel} · {mov.previous_qty} para {mov.new_qty} un.
                       {' · '}
-                      {typeof formatDate === 'function'
-                        ? formatDate(mov.created_at)
+                      {typeof formatFn === 'function'
+                        ? formatFn(mov.created_at)
                         : mov.created_at}
                     </Text>
                   </View>
@@ -111,21 +135,18 @@ function AuditHistoryCard({
             })
           )}
 
-          {movements.length > 0 && (
+          {list.length > 0 && typeof handleExport === 'function' && (
             <TouchableOpacity
-              style={[
-                styles.exportPill,
-                exporting && styles.controlDisabled,
-              ]}
-              activeOpacity={0.85}
-              onPress={onExportCsv}
+              style={[styles.exportPill, exporting && styles.controlDisabled]}
+              activeOpacity={0.82}
+              onPress={handleExport}
               disabled={exporting}
             >
               {exporting ? (
                 <ActivityIndicator size="small" color={TOKENS.ground} />
               ) : (
                 <Text style={styles.exportPillText}>
-                  Exportar Auditoria CSV ({movements.length})
+                  Exportar Auditoria CSV ({list.length})
                 </Text>
               )}
             </TouchableOpacity>
@@ -139,8 +160,10 @@ function AuditHistoryCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: TOKENS.surface,
-    borderRadius: TOKENS.radiusCard,
-    padding: 18,
+    borderWidth: 1,
+    borderColor: TOKENS.border || '#27272a',
+    borderRadius: 14,
+    padding: 16,
     marginBottom: TOKENS.gap,
   },
   headerRow: {
@@ -157,9 +180,10 @@ const styles = StyleSheet.create({
     color: TOKENS.text,
     fontSize: TOKENS.fsBody,
     fontWeight: '600',
+    letterSpacing: -0.2,
   },
   subtitle: {
-    color: TOKENS.muted,
+    color: TOKENS.mutedFg || TOKENS.muted,
     fontSize: TOKENS.fsSmall,
     fontVariant: ['tabular-nums'],
   },
@@ -167,13 +191,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: TOKENS.raised,
-    height: 36,
-    paddingHorizontal: 14,
-    borderRadius: TOKENS.radiusControl,
+    backgroundColor: TOKENS.cardElevated || '#18181b',
+    borderWidth: 1,
+    borderColor: TOKENS.borderStrong || '#3f3f46',
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 8,
   },
   togglePillActive: {
     backgroundColor: TOKENS.text,
+    borderColor: TOKENS.text,
   },
   toggleText: {
     color: TOKENS.text,
@@ -187,11 +214,11 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: TOKENS.rule,
+    borderTopColor: TOKENS.border || '#27272a',
     gap: 10,
   },
   hint: {
-    color: TOKENS.faint,
+    color: TOKENS.mutedFg || TOKENS.faint,
     fontSize: TOKENS.fsSmall,
     lineHeight: 18,
   },
@@ -200,9 +227,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    paddingVertical: 8,
+    paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: TOKENS.rule,
+    borderBottomColor: TOKENS.border || '#27272a',
   },
   auditLeftCol: {
     flex: 1,
@@ -214,28 +241,31 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   auditMetaText: {
-    color: TOKENS.faint,
-    fontSize: TOKENS.fsSmall,
+    color: TOKENS.mutedFg || TOKENS.faint,
+    fontSize: 11,
     fontVariant: ['tabular-nums'],
   },
   auditDeltaPill: {
     minWidth: 48,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: TOKENS.radiusControl,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   auditDeltaText: {
-    fontSize: TOKENS.fsSmall,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
   quantityPillPositive: {
     backgroundColor: TOKENS.pillPositiveBg,
+    borderColor: '#3f5713',
   },
   quantityPillWarning: {
     backgroundColor: TOKENS.pillWarningBg,
+    borderColor: '#4d3810',
   },
   quantityPillValuePositive: {
     color: TOKENS.pillPositiveInk,
@@ -245,16 +275,18 @@ const styles = StyleSheet.create({
   },
   exportPill: {
     backgroundColor: TOKENS.text,
-    height: TOKENS.controlHeight,
-    paddingHorizontal: 18,
-    borderRadius: TOKENS.radiusControl,
+    height: 38,
+    paddingHorizontal: 16,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 4,
   },
   exportPillText: {
     color: TOKENS.ground,
-    fontSize: TOKENS.fsBody,
+    fontSize: TOKENS.fsSmall,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   controlDisabled: {
     opacity: 0.35,
