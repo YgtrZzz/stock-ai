@@ -6,6 +6,7 @@ import {
   normalizeDetections,
   projectBoundingBoxToViewport,
   resolveYoloEngineStatus,
+  validateTfliteModelAsset,
   summarizeDetectionsForProfile,
   runYoloInference,
 } from '../vision/yoloAdapter.js';
@@ -267,5 +268,25 @@ describe('YOLO Edge AI Adapter & Profile Summarizer (TDD - Task 2)', () => {
     assert.deepEqual(result.detections, []);
     assert.equal(result.summary.hasDetections, false);
     assert.equal(result.engineStatus, 'fallback');
+  });
+
+  it('validates TFLite v3 FlatBuffer magic header (TFL3 at offset 4) and detects placeholder binary assets', () => {
+    assert.equal(typeof validateTfliteModelAsset, 'function');
+
+    const placeholderBuf = Buffer.from(
+      'TFL3_PLACEHOLDER_MODEL_FOR_DEV_TESTING_ONLY',
+      'ascii'
+    );
+    const placeholderCheck = validateTfliteModelAsset(placeholderBuf);
+    assert.equal(placeholderCheck.isValidFlatBuffer, false);
+    assert.equal(placeholderCheck.isPlaceholder, true);
+
+    const validFlatBuffer = Buffer.alloc(128);
+    validFlatBuffer.writeUInt32LE(24, 0); // FlatBuffer root table offset
+    validFlatBuffer.write('TFL3', 4, 'ascii'); // TFLite v3 magic identifier at bytes 4..7
+    const validCheck = validateTfliteModelAsset(validFlatBuffer);
+    assert.equal(validCheck.isValidFlatBuffer, true);
+    assert.equal(validCheck.isPlaceholder, false);
+    assert.equal(validCheck.reason, 'valid_tflite_v3');
   });
 });

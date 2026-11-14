@@ -68,6 +68,7 @@ import {
   getItems,
   bulkUpsertItemsFromCatalog,
   updateItemQuantity,
+  getStockMovements,
   deleteItem,
 } from './database';
 import { useTensorflowModel } from 'react-native-fast-tflite';
@@ -1371,9 +1372,11 @@ function InventarioScreen({ refreshKey }) {
 
   const [items, setItems] = useState([]);
   const [spaces, setSpaces] = useState([]);
+  const [stockMovements, setStockMovements] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [stockFilter, setStockFilter] = useState('all');
   const [showCsvImportPanel, setShowCsvImportPanel] = useState(false);
+  const [showAuditLogPanel, setShowAuditLogPanel] = useState(false);
   const [csvImportText, setCsvImportText] = useState('');
   const [aImportarCsv, setAImportarCsv] = useState(false);
   const [aCarregar, setACarregar] = useState(false);
@@ -1389,12 +1392,14 @@ function InventarioScreen({ refreshKey }) {
   const carregarItens = useCallback(async (termoBusca = '') => {
     setACarregar(true);
     try {
-      const [data, listaEspacos] = await Promise.all([
+      const [data, listaEspacos, historico] = await Promise.all([
         getItems(termoBusca),
         getSpaces(),
+        getStockMovements(25),
       ]);
       setItems(data);
       setSpaces(listaEspacos);
+      setStockMovements(historico);
     } catch (error) {
       console.error('Erro ao listar inventário:', error);
     } finally {
@@ -1481,6 +1486,8 @@ function InventarioScreen({ refreshKey }) {
 
     try {
       await updateItemQuantity(item.id, novaQtd);
+      const historico = await getStockMovements(25);
+      setStockMovements(historico);
     } catch (error) {
       console.error('Erro ao aumentar quantidade:', error);
       setItems((prev) =>
@@ -1507,6 +1514,8 @@ function InventarioScreen({ refreshKey }) {
 
     try {
       await updateItemQuantity(item.id, novaQtd);
+      const historico = await getStockMovements(25);
+      setStockMovements(historico);
     } catch (error) {
       console.error('Erro ao diminuir quantidade:', error);
       setItems((prev) =>
@@ -1795,6 +1804,109 @@ function InventarioScreen({ refreshKey }) {
                         </View>
                       )}
                     </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+
+              {/* Painel Auditável de Movimentações de Estoque (Audit Log B2B) */}
+              <View style={styles.csvImportCard}>
+                <View style={styles.csvImportHeaderRow}>
+                  <View style={styles.csvImportTitleBlock}>
+                    <Text style={styles.csvImportTitle}>
+                      Histórico de Movimentações
+                    </Text>
+                    <Text style={styles.csvImportSubtitle}>
+                      {stockMovements.length}{' '}
+                      {stockMovements.length === 1
+                        ? 'registro auditável recente'
+                        : 'registros auditáveis recentes'}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.csvImportTogglePill,
+                      showAuditLogPanel && styles.csvImportTogglePillActive,
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => setShowAuditLogPanel((prev) => !prev)}
+                  >
+                    <RefreshCw
+                      size={13}
+                      color={showAuditLogPanel ? TOKENS.ground : TOKENS.text}
+                      strokeWidth={1.75}
+                    />
+                    <Text
+                      style={[
+                        styles.csvImportToggleText,
+                        showAuditLogPanel && styles.csvImportToggleTextActive,
+                      ]}
+                    >
+                      {showAuditLogPanel ? 'Ocultar' : 'Auditoria'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {showAuditLogPanel && (
+                  <View style={styles.csvImportBody}>
+                    {stockMovements.length === 0 ? (
+                      <Text style={styles.csvImportHint}>
+                        Nenhuma movimentação registrada ainda.
+                      </Text>
+                    ) : (
+                      stockMovements.slice(0, 12).map((mov) => {
+                        const isPositive = Number(mov.delta) >= 0;
+                        const deltaFormatted = isPositive
+                          ? `+${mov.delta}`
+                          : String(mov.delta);
+                        const reasonLabel =
+                          mov.reason === 'cadastro_inicial'
+                            ? 'Cadastro'
+                            : mov.reason === 'sincronizacao_csv'
+                              ? 'Lote CSV'
+                              : isPositive
+                                ? 'Entrada'
+                                : 'Baixa';
+
+                        return (
+                          <View key={String(mov.id)} style={styles.auditLogRow}>
+                            <View style={styles.auditLogLeftCol}>
+                              <Text
+                                style={styles.auditLogItemName}
+                                numberOfLines={1}
+                              >
+                                {mov.item_name}
+                              </Text>
+                              <Text style={styles.auditLogMetaText}>
+                                {reasonLabel} · {mov.previous_qty} para{' '}
+                                {mov.new_qty} un. ·{' '}
+                                {formatarData(mov.created_at)}
+                              </Text>
+                            </View>
+
+                            <View
+                              style={[
+                                styles.auditDeltaPill,
+                                isPositive
+                                  ? styles.quantityPillPositive
+                                  : styles.quantityPillWarning,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.auditDeltaText,
+                                  isPositive
+                                    ? styles.quantityPillValuePositive
+                                    : styles.quantityPillValueWarning,
+                                ]}
+                              >
+                                {deltaFormatted}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })
+                    )}
                   </View>
                 )}
               </View>
@@ -2932,6 +3044,42 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     minHeight: 88,
     textAlignVertical: 'top',
+  },
+  auditLogRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: TOKENS.rule,
+  },
+  auditLogLeftCol: {
+    flex: 1,
+    gap: 2,
+  },
+  auditLogItemName: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  auditLogMetaText: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    fontVariant: ['tabular-nums'],
+  },
+  auditDeltaPill: {
+    minWidth: 48,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: TOKENS.radiusControl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  auditDeltaText: {
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
 
   // Listas e Cards do Inventário ('true-black-flat': surface #111111, radius 20, sem borda, sem sombra)

@@ -368,4 +368,45 @@ describe('Database & Permanent Image Storage (TDD - Task 1)', () => {
     assert.equal(newSku.quantity, 4);
     assert.equal(newSku.space_name, 'Prateleira Telecom');
   });
+
+  it('records audit log entries in stock_movements on insertItem, updateItemQuantity, and bulkUpsertItemsFromCatalog', async () => {
+    await dbModule.initDatabase();
+
+    assert.equal(
+      typeof dbModule.getStockMovements,
+      'function',
+      'getStockMovements must be exported'
+    );
+
+    const item = await dbModule.insertItem(
+      'Disjuntor Bipolar 32A',
+      null,
+      10,
+      '7897778889990',
+      null
+    );
+
+    await dbModule.updateItemQuantity(item.id, 14);
+    await dbModule.updateItemQuantity(item.id, 11);
+
+    const movements = await dbModule.getStockMovements(10);
+    assert.equal(movements.length, 3);
+
+    // Ordem decrescente (mais recente primeiro)
+    assert.equal(movements[0].item_name, 'Disjuntor Bipolar 32A');
+    assert.equal(movements[0].previous_qty, 14);
+    assert.equal(movements[0].new_qty, 11);
+    assert.equal(movements[0].delta, -3);
+    assert.equal(movements[0].reason, 'baixa_estoque');
+
+    assert.equal(movements[1].previous_qty, 10);
+    assert.equal(movements[1].new_qty, 14);
+    assert.equal(movements[1].delta, 4);
+    assert.equal(movements[1].reason, 'entrada_estoque');
+
+    assert.equal(movements[2].previous_qty, 0);
+    assert.equal(movements[2].new_qty, 10);
+    assert.equal(movements[2].delta, 10);
+    assert.equal(movements[2].reason, 'cadastro_inicial');
+  });
 });

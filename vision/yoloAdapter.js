@@ -483,6 +483,73 @@ export function resolveYoloEngineStatus(plugin = null) {
 }
 
 /**
+ * Inspeciona um buffer binário (.tflite) verificando a assinatura FlatBuffer 'TFL3'
+ * nos bytes 4..7 (offset padrão de identificadores FlatBuffer) e distinguindo arquivos
+ * placeholder de desenvolvimento de modelos TFLite v3 reais.
+ *
+ * @param {ArrayBuffer | Uint8Array | null | undefined} buffer
+ * @returns {{ isValidFlatBuffer: boolean, isPlaceholder: boolean, reason: string }}
+ */
+export function validateTfliteModelAsset(buffer) {
+  if (!buffer) {
+    return {
+      isValidFlatBuffer: false,
+      isPlaceholder: false,
+      reason: 'empty_buffer',
+    };
+  }
+
+  const bytes =
+    buffer instanceof Uint8Array
+      ? buffer
+      : ArrayBuffer.isView(buffer)
+        ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+        : buffer instanceof ArrayBuffer
+          ? new Uint8Array(buffer)
+          : null;
+
+  if (!bytes || bytes.byteLength < 16) {
+    return {
+      isValidFlatBuffer: false,
+      isPlaceholder: false,
+      reason: 'buffer_too_small',
+    };
+  }
+
+  const asciiPrefix = String.fromCharCode(
+    ...bytes.slice(0, Math.min(16, bytes.byteLength))
+  );
+  if (asciiPrefix.startsWith('TFL3_PLACEHOLDER')) {
+    return {
+      isValidFlatBuffer: false,
+      isPlaceholder: true,
+      reason: 'placeholder_binary',
+    };
+  }
+
+  const magicAt4 = String.fromCharCode(
+    bytes[4],
+    bytes[5],
+    bytes[6],
+    bytes[7]
+  );
+
+  if (magicAt4 === 'TFL3' && bytes.byteLength >= 64) {
+    return {
+      isValidFlatBuffer: true,
+      isPlaceholder: false,
+      reason: 'valid_tflite_v3',
+    };
+  }
+
+  return {
+    isValidFlatBuffer: false,
+    isPlaceholder: false,
+    reason: 'invalid_flatbuffer_magic',
+  };
+}
+
+/**
  * Executa a inferência YOLO real utilizando o modelo carregado pelo react-native-fast-tflite
  * (via model.run([inputBuffer]) ou model.runSync([inputBuffer])) e retorna os arrays normalizados
  * de predição junto ao resumo por perfil ('home' vs 'business').
@@ -556,5 +623,6 @@ export default {
   projectBoundingBoxToViewport,
   summarizeDetectionsForProfile,
   resolveYoloEngineStatus,
+  validateTfliteModelAsset,
   runYoloInference,
 };

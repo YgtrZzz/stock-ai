@@ -104,5 +104,13 @@ describe('B2B CSV Bulk Import Parser & Sanitizer (TDD)', () => {
       appSource.includes('stockFilter'),
       'App.js must provide stockFilter state for stockout/low-stock audit'
     );
+    assert.ok(
+      appSource.includes('getStockMovements'),
+      'App.js must import and load getStockMovements for B2B Audit Log'
+    );
+    assert.ok(
+      appSource.includes('showAuditLogPanel'),
+      'App.js must render the collapsible B2B Audit Log panel'
+    );
   });
 });

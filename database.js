@@ -12,8 +12,9 @@ const IMAGES_SUBDIR = 'armario_images/';
  * v4: coluna 'barcode TEXT' na tabela 'items' (separação Código de Barras vs Nome + Soma Automática)
  * v5: coluna 'image_uri TEXT' na tabela 'items' com migração não-destrutiva e persistência em FileSystem.documentDirectory
  * v6: coluna 'image_uri TEXT' na tabela 'spaces' (Mapa Visual de Locais) com migração não-destrutiva
+ * v7: tabela 'stock_movements' (Audit Log de Entradas, Baixas e Sincronizações CSV B2B)
  */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 // Mantém uma única instância aberta do banco (padrão Singleton assíncrono)
 let dbPromise = null;
@@ -165,6 +166,18 @@ export async function initDatabase() {
           image_uri TEXT,
           created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS stock_movements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+          item_name TEXT NOT NULL,
+          barcode TEXT,
+          delta INTEGER NOT NULL,
+          previous_qty INTEGER NOT NULL,
+          new_qty INTEGER NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
       `);
 
       // Inspeção não-destrutiva de colunas da tabela 'spaces' para preservar a árvore hierárquica
@@ -195,6 +208,7 @@ export async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_spaces_parent ON spaces(parent_id);
         CREATE INDEX IF NOT EXISTS idx_items_space ON items(space_id);
         CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);
+        CREATE INDEX IF NOT EXISTS idx_movements_item ON stock_movements(item_id);
         PRAGMA user_version = ${SCHEMA_VERSION};
       `);
 
@@ -214,6 +228,40 @@ function limparNome(name) {
     throw new Error('O nome não pode ficar vazio.');
   }
   return limpo;
+}
+
+/**
+ * Registra uma movimentação auditável de estoque na tabela stock_movements.
+ */
+async function recordStockMovement(
+  db,
+  { item_id, item_name, barcode = null, previous_qty, new_qty, reason }
+) {
+  const prev = Number.isFinite(Number(previous_qty)) ? Number(previous_qty) : 0;
+  const next = Number.isFinite(Number(new_qty)) ? Number(new_qty) : 0;
+  const delta = next - prev;
+  if (delta === 0 && reason !== 'cadastro_inicial') {
+    return;
+  }
+
+  const finalReason =
+    reason || (delta >= 0 ? 'entrada_estoque' : 'baixa_estoque');
+  const createdAt = new Date().toISOString();
+
+  await db.runAsync(
+    `INSERT INTO stock_movements (item_id, item_name, barcode, delta, previous_qty, new_qty, reason, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+    [
+      item_id ?? null,
+      String(item_name ?? '').trim() || 'Item',
+      barcode ?? null,
+      delta,
+      prev,
+      next,
+      finalReason,
+      createdAt,
+    ]
+  );
 }
 
 /* ==========================================================
@@ -362,6 +410,15 @@ export async function insertItem(
     'INSERT INTO items (name, space_id, quantity, barcode, image_uri, created_at) VALUES (?, ?, ?, ?, ?, ?);',
     [nome, spaceId, finalQuantity, finalBarcode, finalImageUri, createdAt]
   );
+
+  await recordStockMovement(db, {
+    item_id: result.lastInsertRowId,
+    item_name: nome,
+    barcode: finalBarcode,
+    previous_qty: 0,
+    new_qty: finalQuantity,
+    reason: 'cadastro_inicial',
+  });
 
   return {
     id: result.lastInsertRowId,
@@ -541,10 +598,21 @@ export async function bulkUpsertItemsFromCatalog(entries = []) {
     if (barcode) {
       const existingItem = await getItemByBarcode(barcode);
       if (existingItem) {
+        const previousQty = Number(existingItem.quantity ?? 0);
         await db.runAsync(
           'UPDATE items SET name = ?, quantity = ?, space_id = ? WHERE id = ?;',
           [rawName, quantity, spaceId, existingItem.id]
         );
+        if (quantity !== previousQty) {
+          await recordStockMovement(db, {
+            item_id: existingItem.id,
+            item_name: rawName,
+            barcode,
+            previous_qty: previousQty,
+            new_qty: quantity,
+            reason: 'sincronizacao_csv',
+          });
+        }
         updatedCount += 1;
         totalProcessed += 1;
         continue;
@@ -565,19 +633,60 @@ export async function bulkUpsertItemsFromCatalog(entries = []) {
 }
 
 /**
- * Atualiza a quantidade de um item específico pelo ID.
+ * Atualiza a quantidade de um item específico pelo ID e grava registro no Audit Log (stock_movements).
  * @param {number} id ID do item a ser atualizado.
  * @param {number} newQuantity Nova quantidade (bloqueada para não ficar menor que 0).
+ * @param {string|null} [reason] Motivo opcional ('entrada_estoque' | 'baixa_estoque' | 'sincronizacao_csv').
  */
-export async function updateItemQuantity(id, newQuantity) {
+export async function updateItemQuantity(id, newQuantity, reason = null) {
   const parsedQty = parseInt(newQuantity, 10);
   const finalQuantity = Number.isFinite(parsedQty) ? Math.max(0, parsedQty) : 0;
 
   const db = await initDatabase();
+  const anterior = await db.getFirstAsync(
+    'SELECT id, name, barcode, COALESCE(quantity, 1) AS quantity FROM items WHERE id = ?;',
+    [id]
+  );
+
   await db.runAsync('UPDATE items SET quantity = ? WHERE id = ?;', [
     finalQuantity,
     id,
   ]);
+
+  if (anterior) {
+    await recordStockMovement(db, {
+      item_id: anterior.id,
+      item_name: anterior.name,
+      barcode: anterior.barcode,
+      previous_qty: anterior.quantity,
+      new_qty: finalQuantity,
+      reason,
+    });
+  }
+}
+
+/**
+ * Retorna o histórico recente de movimentações de estoque (Audit Log B2B),
+ * ordenado da movimentação mais recente para a mais antiga.
+ *
+ * @param {number} [limit=40] Quantidade máxima de registros retornados.
+ * @returns {Promise<Array<{ id: number, item_id: number|null, item_name: string, barcode: string|null, delta: number, previous_qty: number, new_qty: number, reason: string, created_at: string }>>}
+ */
+export async function getStockMovements(limit = 40) {
+  const parsedLimit = parseInt(limit, 10);
+  const safeLimit =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(200, parsedLimit)
+      : 40;
+
+  const db = await initDatabase();
+  return db.getAllAsync(
+    `SELECT id, item_id, item_name, barcode, delta, previous_qty, new_qty, reason, created_at
+     FROM stock_movements
+     ORDER BY id DESC
+     LIMIT ?;`,
+    [safeLimit]
+  );
 }
 
 /**
@@ -626,6 +735,7 @@ export default {
   getItems,
   bulkUpsertItemsFromCatalog,
   updateItemQuantity,
+  getStockMovements,
   deleteItem,
   deletePersistedImageIfOwned,
   resetDatabaseConnectionForTests,
