@@ -286,14 +286,12 @@ export function parseVisualSignature(rawSignature) {
 }
 
 /**
- * Calcula a pontuação de similaridade v3 [0, 1] entre duas assinaturas visuais
+ * Calcula a pontuação de similaridade v3 [0, 1] entre dois protótipos únicos
  * usando Template Matching 8x8 deslizante (dx, dy em [-2..+2]) sobre o patch 12x12
  * com ponderação Gaussiana central + similaridade de histograma do objeto.
  */
-export function computeVisualSimilarity(sigA, sigB) {
-  const a = parseVisualSignature(sigA);
-  const b = parseVisualSignature(sigB);
-  if (!a || !b) return 0;
+function computeSinglePrototypeSimilarity(a, b) {
+  if (!a || !b || !Array.isArray(a.grid) || !Array.isArray(b.grid)) return 0;
 
   let bestSpatial = 0;
   const hasChromaAndEdge =
@@ -379,6 +377,76 @@ export function computeVisualSimilarity(sigA, sigB) {
 
   const combined = bestSpatial * 0.65 + histSim * 0.35;
   return Number(Math.max(0, Math.min(1, combined)).toFixed(4));
+}
+
+/**
+ * Calcula a pontuação de similaridade v3 [0, 1] entre duas assinaturas visuais,
+ * avaliando todos os protótipos multi-ângulo armazenados (até 3 visões por item).
+ */
+export function computeVisualSimilarity(sigA, sigB) {
+  const a = parseVisualSignature(sigA);
+  const b = parseVisualSignature(sigB);
+  if (!a || !b) return 0;
+
+  const viewsA = [
+    a,
+    ...(Array.isArray(a.prototypes) ? a.prototypes.slice(0, 2) : []),
+  ];
+  const viewsB = [
+    b,
+    ...(Array.isArray(b.prototypes) ? b.prototypes.slice(0, 2) : []),
+  ];
+
+  let maxSim = 0;
+  for (const va of viewsA) {
+    for (const vb of viewsB) {
+      const s = computeSinglePrototypeSimilarity(va, vb);
+      if (s > maxSim) maxSim = s;
+    }
+  }
+
+  return maxSim;
+}
+
+/**
+ * Mescla uma nova assinatura visual v3 com a assinatura existente do item,
+ * preservando até `maxExtraPrototypes` ângulos extras (total de 3 visões por item)
+ * sem crescimento ilimitado de memória.
+ */
+export function mergeVisualSignatures(
+  existingSig,
+  newSig,
+  maxExtraPrototypes = 2
+) {
+  const existing = parseVisualSignature(existingSig);
+  const incoming = parseVisualSignature(newSig);
+  if (!incoming && !existing) return null;
+  if (!existing) return JSON.stringify(incoming);
+  if (!incoming) return JSON.stringify(existing);
+
+  const compactPrototype = {
+    grid: incoming.grid,
+    chromaCb: incoming.chromaCb,
+    chromaCr: incoming.chromaCr,
+    edge: incoming.edge,
+    hist: incoming.hist,
+    dHash: incoming.dHash,
+  };
+
+  const priorPrototypes = Array.isArray(existing.prototypes)
+    ? existing.prototypes.filter(
+        (p) => p && Array.isArray(p.grid) && p.grid.length === PATCH_CELLS
+      )
+    : [];
+
+  const updatedPrototypes = [...priorPrototypes, compactPrototype].slice(
+    -Math.max(1, maxExtraPrototypes)
+  );
+
+  return JSON.stringify({
+    ...existing,
+    prototypes: updatedPrototypes,
+  });
 }
 
 /**

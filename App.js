@@ -84,6 +84,8 @@ import B2BStockHealthBanner from './components/B2BStockHealthBanner';
 import CsvBulkImportCard from './components/CsvBulkImportCard';
 import ExportButton from './components/ExportButton';
 import PhotoLightboxModal from './components/PhotoLightboxModal';
+import ScannedBarcodeBanner from './components/ScannedBarcodeBanner';
+import VisualRecognitionBanner from './components/VisualRecognitionBanner';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
 import { ProfileContext } from './context/ProfileContext';
 import { useKeyboardVisible } from './hooks/useKeyboardVisible';
@@ -108,6 +110,7 @@ import { buildYoloInputTensorFromBase64 } from './vision/imagePreprocessor';
 import {
   computeVisualSignature,
   findBestVisualMatch,
+  mergeVisualSignatures,
 } from './vision/visualMatcher';
 import {
   resolveYoloEngineStatus,
@@ -391,10 +394,12 @@ function ScannerScreen({ onInventoryUpdated }) {
           space_id: espacoSelecionadoId,
           barcode: barcodeSeguro || matchedExistingItem.barcode || null,
           image_uri: capturedImage || matchedExistingItem.image_uri || null,
-          visual_signature:
-            capturedVisualSignature ||
-            matchedExistingItem.visual_signature ||
-            null,
+          visual_signature: capturedVisualSignature
+            ? mergeVisualSignatures(
+                matchedExistingItem.visual_signature,
+                capturedVisualSignature
+              )
+            : matchedExistingItem.visual_signature || null,
         });
       } else {
         await insertItem(
@@ -663,91 +668,33 @@ function ScannerScreen({ onInventoryUpdated }) {
             </Text>
           </View>
 
-          {/* Banner de Reconhecimento Visual por Foto (reconhece automaticamente nome, local e código de item já salvo) */}
-          {visualRecognizedMatch?.item ? (
-            <View style={styles.scannedBarcodeBanner}>
-              <View style={styles.scannedBarcodeLeft}>
-                <Check
-                  size={16}
-                  color={TOKENS.pillPositiveInk}
-                  strokeWidth={2}
-                />
-                <View style={styles.scannedBarcodeTextCol}>
-                  <Text style={styles.scannedBarcodeText} numberOfLines={1}>
-                    Item reconhecido pela foto: {visualRecognizedMatch.item.name}
-                  </Text>
-                  <Text style={styles.scannedBarcodeSubtext}>
-                    Local: {visualRecognizedMatch.item.space_name || 'Sem local'}
-                    {visualRecognizedMatch.item.barcode
-                      ? ` · Código: ${visualRecognizedMatch.item.barcode}`
-                      : ''}{' '}
-                    · Saldo: {visualRecognizedMatch.item.quantity} un.
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                onPress={() => {
-                  setVisualRecognizedMatch(null);
-                  setMatchedExistingItem(null);
-                  setNome('');
-                  setEspacoSelecionadoId(null);
-                  setCurrentBarcode(null);
-                  lastScannedRef.current = '';
-                  setLastScannedData('');
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <X
-                  size={16}
-                  color={TOKENS.pillPositiveInk}
-                  strokeWidth={1.5}
-                />
-              </TouchableOpacity>
-            </View>
-          ) : null}
+          {/* Banner Memoizado de Reconhecimento Visual por Foto (reconhece nome, local e código de item já salvo) */}
+          <VisualRecognitionBanner
+            match={visualRecognizedMatch}
+            onDismiss={() => {
+              setVisualRecognizedMatch(null);
+              setMatchedExistingItem(null);
+              setNome('');
+              setEspacoSelecionadoId(null);
+              setCurrentBarcode(null);
+              lastScannedRef.current = '';
+              setLastScannedData('');
+            }}
+          />
 
-          {/* Banner de Código de Barras Escaneado no Perfil Business */}
-          {isBusiness && currentBarcode ? (
-            <View style={styles.scannedBarcodeBanner}>
-              <View style={styles.scannedBarcodeLeft}>
-                <Barcode
-                  size={16}
-                  color={TOKENS.pillPositiveInk}
-                  strokeWidth={1.5}
-                />
-                <View style={styles.scannedBarcodeTextCol}>
-                  <Text style={styles.scannedBarcodeText} numberOfLines={1}>
-                    Código: {currentBarcode}
-                  </Text>
-                  {matchedExistingItem ? (
-                    <Text style={styles.scannedBarcodeSubtext}>
-                      SKU já cadastrado ({matchedExistingItem.quantity} un. em
-                      estoque). Defina quanto somar abaixo e toque em Salvar.
-                    </Text>
-                  ) : (
-                    <Text style={styles.scannedBarcodeSubtext}>
-                      Novo SKU lido. Informe o nome, quantidade, local e salve.
-                    </Text>
-                  )}
-                </View>
-              </View>
-              <TouchableOpacity
-                onPress={() => {
-                  setCurrentBarcode(null);
-                  setMatchedExistingItem(null);
-                  lastScannedRef.current = '';
-                  setLastScannedData('');
-                  processandoScanRef.current = false;
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <X
-                  size={16}
-                  color={TOKENS.pillPositiveInk}
-                  strokeWidth={1.5}
-                />
-              </TouchableOpacity>
-            </View>
+          {/* Banner Memoizado de Código de Barras Escaneado no Perfil Business */}
+          {isBusiness ? (
+            <ScannedBarcodeBanner
+              barcode={currentBarcode}
+              matchedExistingItem={matchedExistingItem}
+              onDismiss={() => {
+                setCurrentBarcode(null);
+                setMatchedExistingItem(null);
+                lastScannedRef.current = '';
+                setLastScannedData('');
+                processandoScanRef.current = false;
+              }}
+            />
           ) : null}
 
           <Text style={styles.label}>
