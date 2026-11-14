@@ -70,16 +70,24 @@ import {
   getItems,
   getItemsBySpace,
   bulkUpsertItemsFromCatalog,
+  restoreDatabaseSnapshot,
   updateItemQuantity,
   updateItemDetails,
   getStockMovements,
   deleteItem,
 } from './database';
 import { useTensorflowModel } from 'react-native-fast-tflite';
+import B2BBackupRestoreCard from './components/B2BBackupRestoreCard';
 import B2BStockHealthBanner from './components/B2BStockHealthBanner';
 import ExportButton from './components/ExportButton';
 import PhotoLightboxModal from './components/PhotoLightboxModal';
 import YoloCameraOverlay from './components/YoloCameraOverlay';
+import { ProfileContext } from './context/ProfileContext';
+import OnboardingScreen from './screens/OnboardingScreen';
+import {
+  exportSignedBackupFile,
+  parseAndVerifyBackupSnapshot,
+} from './utils/backupManager';
 import { TOKENS } from './utils/designTokens';
 import {
   generateAndShareInventoryCSV,
@@ -104,16 +112,6 @@ const YOLO_DELEGATES = Platform.OS === 'ios' ? ['core-ml'] : [];
 const Tab = createBottomTabNavigator();
 
 const STORAGE_KEY_PROFILE = '@armario_digital:user_profile';
-
-/**
- * Contexto global de Perfil de Uso ('home' | 'business' | null) + Lightbox de Fotos
- */
-const ProfileContext = createContext({
-  userProfile: null,
-  selectProfile: async () => {},
-  resetProfile: async () => {},
-  openLightbox: () => {},
-});
 
 /**
  * Hook que monitora se o teclado virtual está aberto (keyboardDidShow / keyboardDidHide)
@@ -163,107 +161,6 @@ function formatarNomeEspaco(espaco) {
   return espaco.parent_name
     ? `${espaco.parent_name} / ${espaco.name}`
     : espaco.name;
-}
-
-/* ==========================================================
-   TELA DE ONBOARDING (Seleção de Perfil: 'home' | 'business')
-   ========================================================== */
-function OnboardingScreen({ onSelectProfile }) {
-  const [salvandoPerfil, setSalvandoPerfil] = useState(null);
-
-  const handleEscolher = async (perfil) => {
-    if (salvandoPerfil) return;
-    setSalvandoPerfil(perfil);
-    try {
-      await onSelectProfile(perfil);
-    } finally {
-      setSalvandoPerfil(null);
-    }
-  };
-
-  return (
-    <View style={styles.onboardingScreen}>
-      <StatusBar style="light" />
-      <View style={styles.onboardingContent}>
-        <Text style={styles.onboardingBrand}>Armário Digital</Text>
-        <Text style={styles.onboardingTitle}>
-          Como você vai usar o Armário Digital?
-        </Text>
-        <Text style={styles.onboardingSubtitle}>
-          Escolha o modo ideal para adaptar a câmera e os controles ao seu
-          fluxo.
-        </Text>
-
-        <View style={styles.onboardingCardsGroup}>
-          {/* Opção 1: Uso Pessoal ('home') */}
-          <TouchableOpacity
-            style={styles.onboardingCard}
-            activeOpacity={0.82}
-            onPress={() => handleEscolher('home')}
-            disabled={Boolean(salvandoPerfil)}
-          >
-            <View style={styles.onboardingCardHeader}>
-              <Home size={22} color={TOKENS.text} strokeWidth={1.5} />
-              <View style={styles.onboardingModePill}>
-                <Text style={styles.onboardingModePillText}>Residencial</Text>
-              </View>
-            </View>
-
-            <Text style={styles.onboardingCardTitle}>
-              Uso Pessoal (Organizar minha casa)
-            </Text>
-            <Text style={styles.onboardingCardDesc}>
-              Capture fotos rápidas de objetos domésticos, roupas, ferramentas e
-              caixas organizadoras por cômodo e armário.
-            </Text>
-
-            <View style={styles.onboardingActionRow}>
-              <View style={styles.primaryInvertedPill}>
-                <Text style={styles.primaryInvertedPillText}>
-                  {salvandoPerfil === 'home'
-                    ? 'Configurando...'
-                    : 'Selecionar Uso Pessoal'}
-                </Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-
-          {/* Opção 2: Para meu Negócio ('business') */}
-          <TouchableOpacity
-            style={styles.onboardingCard}
-            activeOpacity={0.82}
-            onPress={() => handleEscolher('business')}
-            disabled={Boolean(salvandoPerfil)}
-          >
-            <View style={styles.onboardingCardHeader}>
-              <Building2 size={22} color={TOKENS.text} strokeWidth={1.5} />
-              <View style={styles.onboardingModePillAccent}>
-                <Text style={styles.onboardingModePillAccentText}>B2B</Text>
-              </View>
-            </View>
-
-            <Text style={styles.onboardingCardTitle}>
-              Para meu Negócio (Controle de estoque)
-            </Text>
-            <Text style={styles.onboardingCardDesc}>
-              Leitor nativo de código de barras e QR Code com soma automática de
-              SKUs e atalhos rápidos de lote.
-            </Text>
-
-            <View style={styles.onboardingActionRow}>
-              <View style={styles.primaryInvertedPill}>
-                <Text style={styles.primaryInvertedPillText}>
-                  {salvandoPerfil === 'business'
-                    ? 'Configurando...'
-                    : 'Selecionar Para meu Negócio'}
-                </Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
 }
 
 /* ==========================================================
@@ -1781,6 +1678,8 @@ function InventarioScreen({ refreshKey }) {
   const [aCarregar, setACarregar] = useState(false);
   const [aExportar, setAExportar] = useState(false);
   const [aExportarAuditoria, setAExportarAuditoria] = useState(false);
+  const [aExportarBackup, setAExportarBackup] = useState(false);
+  const [aRestaurarBackup, setARestaurarBackup] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
   const [editingItemName, setEditingItemName] = useState('');
   const [editingItemSpaceId, setEditingItemSpaceId] = useState(null);
@@ -1845,6 +1744,60 @@ function InventarioScreen({ refreshKey }) {
       setAExportarAuditoria(false);
     }
   }, [aExportarAuditoria, stockMovements]);
+
+  const handleExportarBackupJson = useCallback(async () => {
+    if (aExportarBackup) return;
+    setAExportarBackup(true);
+    try {
+      await exportSignedBackupFile({
+        spaces,
+        items,
+        movements: stockMovements,
+      });
+    } catch (error) {
+      console.error('Erro ao exportar backup assinado:', error);
+      Alert.alert(
+        'Erro no backup',
+        'Não foi possível gerar ou compartilhar o arquivo de backup.'
+      );
+    } finally {
+      setAExportarBackup(false);
+    }
+  }, [aExportarBackup, items, spaces, stockMovements]);
+
+  const handleRestaurarBackupJson = useCallback(
+    async (jsonString) => {
+      if (aRestaurarBackup) return false;
+      const verificacao = parseAndVerifyBackupSnapshot(jsonString);
+      if (!verificacao.valid) {
+        const msg =
+          verificacao.reason === 'checksum_mismatch'
+            ? 'Assinatura de integridade (checksum) inválida. O arquivo foi alterado ou corrompido.'
+            : 'O conteúdo JSON informado não é um backup válido do Armário Digital.';
+        Alert.alert('Backup rejeitado por segurança', msg);
+        return false;
+      }
+
+      setARestaurarBackup(true);
+      try {
+        const stats = await restoreDatabaseSnapshot(verificacao.data);
+        Keyboard.dismiss();
+        await carregarItens(searchQuery);
+        Alert.alert(
+          'Backup restaurado com sucesso',
+          `${stats.restoredItems} produto(s) e ${stats.restoredSpaces} espaço(s) sincronizados com integridade verificada.`
+        );
+        return true;
+      } catch (error) {
+        console.error('Erro ao restaurar backup JSON:', error);
+        Alert.alert('Erro', 'Não foi possível restaurar o backup informado.');
+        return false;
+      } finally {
+        setARestaurarBackup(false);
+      }
+    },
+    [aRestaurarBackup, carregarItens, searchQuery]
+  );
 
   const handleIniciarEdicaoItem = useCallback((item) => {
     setEditingItemId(item.id);
@@ -2253,6 +2206,15 @@ function InventarioScreen({ refreshKey }) {
                 totalUnits={totalUnidades}
                 loading={aExportar}
                 onPress={handleExportarRelatorioCsv}
+              />
+
+              <B2BBackupRestoreCard
+                spacesCount={spaces.length}
+                itemsCount={items.length}
+                exporting={aExportarBackup}
+                restoring={aRestaurarBackup}
+                onExportBackup={handleExportarBackupJson}
+                onRestoreBackupJson={handleRestaurarBackupJson}
               />
 
               {/* Painel de Importação em Lote CSV (Interoperabilidade B2B / ERP) */}

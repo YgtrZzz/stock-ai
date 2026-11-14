@@ -872,6 +872,84 @@ export async function getStockMovements(limit = 40) {
 }
 
 /**
+ * Restaura um snapshot JSON assinado de espaços hierárquicos e itens de forma segura
+ * (sem DROP TABLE), preservando registros existentes e gravando auditoria.
+ *
+ * @param {{ spaces?: Array<{ name: string, parentName?: string|null }>, items?: Array<{ name: string, quantity: number, barcode?: string|null, spaceName?: string|null }> }} snapshotData
+ * @returns {Promise<{ restoredSpaces: number, restoredItems: number }>}
+ */
+export async function restoreDatabaseSnapshot(snapshotData = {}) {
+  const db = await initDatabase();
+  const safeSpaces = Array.isArray(snapshotData?.spaces)
+    ? snapshotData.spaces
+    : [];
+  const safeItems = Array.isArray(snapshotData?.items)
+    ? snapshotData.items
+    : [];
+
+  const existingSpaces = await getSpaces();
+  const spaceIdByName = new Map();
+  for (const sp of existingSpaces) {
+    if (sp?.name) {
+      spaceIdByName.set(String(sp.name).trim().toLowerCase(), sp.id);
+    }
+  }
+
+  let restoredSpaces = 0;
+
+  // 1ª passagem: garante todos os espaços raiz (sem parentName)
+  for (const sp of safeSpaces) {
+    const cleanName = String(sp?.name ?? '').trim();
+    if (!cleanName || sp?.parentName) continue;
+    const key = cleanName.toLowerCase();
+    if (!spaceIdByName.has(key)) {
+      const created = await addSpace(cleanName, null, null);
+      spaceIdByName.set(key, created.id);
+      restoredSpaces += 1;
+    }
+  }
+
+  // 2ª passagem: garante sub-espaços (com parentName)
+  for (const sp of safeSpaces) {
+    const cleanName = String(sp?.name ?? '').trim();
+    if (!cleanName) continue;
+    const key = cleanName.toLowerCase();
+    if (spaceIdByName.has(key)) continue;
+
+    const parentKey = sp?.parentName
+      ? String(sp.parentName).trim().toLowerCase()
+      : null;
+    let parentId = parentKey ? spaceIdByName.get(parentKey) ?? null : null;
+    if (parentKey && parentId === null) {
+      const createdParent = await addSpace(String(sp.parentName).trim(), null, null);
+      parentId = createdParent.id;
+      spaceIdByName.set(parentKey, parentId);
+      restoredSpaces += 1;
+    }
+
+    const createdSub = await addSpace(cleanName, parentId, null);
+    spaceIdByName.set(key, createdSub.id);
+    restoredSpaces += 1;
+  }
+
+  const catalogEntries = safeItems.map((it) => ({
+    name: it.name,
+    quantity: it.quantity,
+    barcode: it.barcode || null,
+    space_name: it.spaceName || '',
+  }));
+
+  const upsertStats = await bulkUpsertItemsFromCatalog(catalogEntries);
+
+  return {
+    restoredSpaces: restoredSpaces + upsertStats.createdSpacesCount,
+    restoredItems: upsertStats.totalProcessed,
+    insertedCount: upsertStats.insertedCount,
+    updatedCount: upsertStats.updatedCount,
+  };
+}
+
+/**
  * Remove um item específico pelo ID.
  * @param {number} id ID do item a ser removido.
  */
@@ -918,6 +996,7 @@ export default {
   getItems,
   getItemsBySpace,
   bulkUpsertItemsFromCatalog,
+  restoreDatabaseSnapshot,
   updateItemQuantity,
   updateItemDetails,
   getStockMovements,
