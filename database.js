@@ -1076,6 +1076,32 @@ export async function restoreDatabaseSnapshot(snapshotData = {}) {
 }
 
 /**
+ * Aplica o reconciliamento em lote das discrepâncias apuradas em auditoria física de estoque.
+ * Para cada item divergente, atualiza o saldo e registra no Audit Log (stock_movements).
+ *
+ * @param {Array<{ itemId?: number, countedQty?: number, physicalQty?: number, difference?: number }>} discrepancies
+ * @returns {Promise<{ adjustedCount: number }>}
+ */
+export async function applyAuditReconciliation(discrepancies = []) {
+  if (!Array.isArray(discrepancies) || discrepancies.length === 0) {
+    return { adjustedCount: 0 };
+  }
+
+  let adjustedCount = 0;
+  for (const entry of discrepancies) {
+    const itemId = parseInt(entry?.itemId || entry?.id, 10);
+    const targetQty = parseInt(entry?.countedQty ?? entry?.physicalQty, 10);
+    if (!Number.isFinite(itemId) || itemId <= 0) continue;
+    if (!Number.isFinite(targetQty) || targetQty < 0) continue;
+
+    await updateItemQuantity(itemId, targetQty, 'ajuste_auditoria_inventario');
+    adjustedCount += 1;
+  }
+
+  return { adjustedCount };
+}
+
+/**
  * Remove um item específico pelo ID.
  * @param {number} id ID do item a ser removido.
  */
@@ -1125,6 +1151,7 @@ export default {
   restoreDatabaseSnapshot,
   updateItemQuantity,
   updateItemDetails,
+  applyAuditReconciliation,
   getStockMovements,
   deleteItem,
   deletePersistedImageIfOwned,

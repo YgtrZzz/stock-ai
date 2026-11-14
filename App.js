@@ -75,13 +75,16 @@ import {
   restoreDatabaseSnapshot,
   updateItemQuantity,
   updateItemDetails,
+  applyAuditReconciliation,
   getStockMovements,
   deleteItem,
 } from './database';
 import { useTensorflowModel } from 'react-native-fast-tflite';
+import AuditDiscrepancyModal from './components/AuditDiscrepancyModal';
 import AuditHistoryCard from './components/AuditHistoryCard';
 import B2BBackupRestoreCard from './components/B2BBackupRestoreCard';
 import B2BStockHealthBanner from './components/B2BStockHealthBanner';
+import BatchScanHudOverlay from './components/BatchScanHudOverlay';
 import CsvBulkImportCard from './components/CsvBulkImportCard';
 import ExportButton from './components/ExportButton';
 import ForecastPurchasingCard from './components/ForecastPurchasingCard';
@@ -114,6 +117,11 @@ import {
   sanitizeTextInput,
   validateCsvPayloadSize,
 } from './utils/securityValidators';
+import {
+  createBatchScanSession,
+  processBatchBarcodeScan,
+  consolidateAuditDiscrepancies,
+} from './utils/batchScanner';
 import { buildYoloInputTensorFromBase64 } from './vision/imagePreprocessor';
 import {
   computeVisualSignature,
@@ -207,6 +215,18 @@ function ScannerScreen({ onInventoryUpdated }) {
   const [aGuardar, setAGuardar] = useState(false);
   const [captureSize, setCaptureSize] = useState(undefined);
 
+  // Ciclo 14: Modo Scanner Contínuo (Bipagem Rápida B2B) & Auditoria
+  const [batchModeActive, setBatchModeActive] = useState(false);
+  const [batchOperationMode, setBatchOperationMode] = useState('in'); // 'in' | 'out' | 'audit'
+  const [batchSession, setBatchSession] = useState(() =>
+    createBatchScanSession({ mode: 'inflow' })
+  );
+  const [lastScanFeedback, setLastScanFeedback] = useState(null);
+  const [auditModalVisible, setAuditModalVisible] = useState(false);
+  const [auditDiscrepanciesList, setAuditDiscrepanciesList] = useState([]);
+  const batchSessionRef = useRef(batchSession);
+  batchSessionRef.current = batchSession;
+
   const isFocused = useIsFocused();
 
   // Seleciona uma única vez a resolução de captura ~2 MP (4:3) suportada pelo sensor
@@ -247,13 +267,77 @@ function ScannerScreen({ onInventoryUpdated }) {
     }, [])
   );
 
-  // Passo 1 (B2B): Leitura de Código de Barras sanitizada prepara o formulário sem salvar automaticamente
+  // Passo 1 (B2B): Leitura de Código de Barras sanitizada (Unitária ou em Lote Contínuo)
   const handleBarcodeScanned = async ({ data }) => {
     if (!isBusiness) return;
 
     const valorLido = sanitizeBarcodeInput(data);
     if (!valorLido) return;
 
+    // Se o Modo Scanner Contínuo estiver ativo, delega para a máquina de estado do batchScanner
+    if (batchModeActive) {
+      if (processandoScanRef.current) return;
+      processandoScanRef.current = true;
+      try {
+        const itemExistente = await getItemByBarcode(valorLido);
+        const map = itemExistente ? { [valorLido]: itemExistente } : {};
+        const result = processBatchBarcodeScan({
+          barcode: valorLido,
+          itemsByBarcode: map,
+          session: batchSessionRef.current,
+        });
+
+        if (result.status === 'COOLDOWN_IGNORED') {
+          return;
+        }
+
+        if (result.status === 'SUCCESS') {
+          Vibration.vibrate(50);
+          if (batchOperationMode === 'in' || batchOperationMode === 'out') {
+            await updateItemQuantity(
+              result.item.id,
+              result.newQuantity,
+              batchOperationMode === 'in'
+                ? 'entrada_lote_continuo'
+                : 'saida_lote_continuo'
+            );
+            onInventoryUpdated?.();
+          }
+          setLastScanFeedback({
+            type: 'success',
+            barcode: valorLido,
+            itemName: result.item.name,
+            prevQty: result.item.quantity,
+            newQty: result.newQuantity,
+            delta: result.delta,
+            timestamp: Date.now(),
+          });
+          setBatchSession({ ...batchSessionRef.current });
+        } else if (result.status === 'OUT_OF_STOCK_BLOCKED') {
+          Vibration.vibrate([0, 100, 50, 100]);
+          setLastScanFeedback({
+            type: 'blocked',
+            barcode: valorLido,
+            itemName: result.item.name,
+            timestamp: Date.now(),
+          });
+        } else if (result.status === 'UNKNOWN_BARCODE') {
+          Vibration.vibrate(150);
+          setLastScanFeedback({
+            type: 'not_found',
+            barcode: valorLido,
+            timestamp: Date.now(),
+          });
+        }
+      } catch (err) {
+        console.error('Erro no processamento contínuo de barcode:', err);
+      } finally {
+        processandoScanRef.current = false;
+      }
+      return;
+    }
+
+    // Modo Padrão (Unitário B2B): prepara o formulário sem salvar automaticamente
     if (
       valorLido === lastScannedData ||
       valorLido === lastScannedRef.current ||
@@ -285,6 +369,95 @@ function ScannerScreen({ onInventoryUpdated }) {
       processandoScanRef.current = false;
     }
   };
+
+  const handleToggleBatchMode = useCallback(() => {
+    setBatchModeActive((prev) => {
+      const next = !prev;
+      if (next) {
+        const fresh = createBatchScanSession({
+          mode:
+            batchOperationMode === 'out'
+              ? 'outflow'
+              : batchOperationMode === 'audit'
+              ? 'audit'
+              : 'inflow',
+        });
+        setBatchSession(fresh);
+        batchSessionRef.current = fresh;
+        setLastScanFeedback(null);
+      }
+      return next;
+    });
+  }, [batchOperationMode]);
+
+  const handleSelectBatchMode = useCallback((mode) => {
+    setBatchOperationMode(mode);
+    const flowMode =
+      mode === 'out' ? 'outflow' : mode === 'audit' ? 'audit' : 'inflow';
+    const fresh = createBatchScanSession({ mode: flowMode });
+    setBatchSession(fresh);
+    batchSessionRef.current = fresh;
+    setLastScanFeedback(null);
+  }, []);
+
+  const handleResetBatchSession = useCallback(() => {
+    const flowMode =
+      batchOperationMode === 'out'
+        ? 'outflow'
+        : batchOperationMode === 'audit'
+        ? 'audit'
+        : 'inflow';
+    const fresh = createBatchScanSession({ mode: flowMode });
+    setBatchSession(fresh);
+    batchSessionRef.current = fresh;
+    setLastScanFeedback(null);
+  }, [batchOperationMode]);
+
+  const handleFinishBatch = useCallback(async () => {
+    if (batchOperationMode === 'audit') {
+      try {
+        const todosItens = await getItems('');
+        const report = consolidateAuditDiscrepancies(
+          batchSessionRef.current.itemsMap,
+          todosItens
+        );
+        setAuditDiscrepanciesList(report.discrepancies);
+        setAuditModalVisible(true);
+      } catch (err) {
+        console.error('Erro ao consolidar auditoria:', err);
+      }
+      return;
+    }
+
+    Alert.alert(
+      'Lote Finalizado',
+      `${batchSession.scannedCount} leituras processadas com sucesso.`
+    );
+    handleResetBatchSession();
+  }, [batchOperationMode, batchSession.scannedCount, handleResetBatchSession]);
+
+  const handleApplyAuditAdjustment = useCallback(async () => {
+    try {
+      const res = await applyAuditReconciliation(auditDiscrepanciesList);
+      setAuditModalVisible(false);
+      onInventoryUpdated?.();
+      Alert.alert(
+        'Inventário Ajustado',
+        `${res.adjustedCount} saldos foram atualizados no estoque.`
+      );
+      handleResetBatchSession();
+    } catch (err) {
+      console.error('Erro ao aplicar ajuste de auditoria:', err);
+      Alert.alert('Erro', 'Não foi possível atualizar os saldos divergentes.');
+    }
+  }, [auditDiscrepanciesList, handleResetBatchSession, onInventoryUpdated]);
+
+  const handleQuickCreateUnregistered = useCallback((barcode) => {
+    setBatchModeActive(false);
+    setCurrentBarcode(barcode);
+    setNome('');
+    setMatchedExistingItem(null);
+  }, []);
 
   // Passo 1: Captura de fotografia nativa na CameraView + Pré-processamento de Tensor + Inferência YOLO
   const handleTirarFotoItem = async () => {
@@ -575,6 +748,23 @@ function ScannerScreen({ onInventoryUpdated }) {
           userProfile={userProfile}
           onApplySuggestion={handleAplicarSugestaoYolo}
         />
+
+        {isBusiness && (
+          <BatchScanHudOverlay
+            enabled={batchModeActive}
+            onToggleEnabled={handleToggleBatchMode}
+            operationMode={batchOperationMode}
+            onSelectOperationMode={handleSelectBatchMode}
+            lastScanFeedback={lastScanFeedback}
+            sessionStats={{
+              totalBips: batchSession.scannedCount,
+              totalSkus: batchSession.uniqueItemsCount,
+            }}
+            onResetSession={handleResetBatchSession}
+            onFinishBatch={handleFinishBatch}
+            onOpenQuickCreate={handleQuickCreateUnregistered}
+          />
+        )}
       </View>
     ) : (
       <View style={styles.cameraPlaceholder} />
@@ -815,6 +1005,12 @@ function ScannerScreen({ onInventoryUpdated }) {
           </TouchableOpacity>
         </View>
       </ScrollView>
+      <AuditDiscrepancyModal
+        visible={auditModalVisible}
+        items={auditDiscrepanciesList}
+        onClose={() => setAuditModalVisible(false)}
+        onApplyStockAdjustment={handleApplyAuditAdjustment}
+      />
     </KeyboardAvoidingView>
   );
 }
