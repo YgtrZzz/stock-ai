@@ -448,5 +448,21 @@ describe('Database & Permanent Image Storage (TDD - Task 1)', () => {
     assert.equal(movements[0].delta, 0);
     assert.equal(movements[0].previous_qty, 6);
     assert.equal(movements[0].new_qty, 6);
+
+    // Act 2: Atualiza também a fotografia via updateItemDetails e limpa a antiga
+    const updatedWithNewPhoto = await dbModule.updateItemDetails(item.id, {
+      name: 'Roteador Wi-Fi 6 Gigabit Pro',
+      space_id: setorExpedicao.id,
+      image_uri: 'file:///app/cache/Camera/router-v2.jpg',
+    });
+
+    assert.notEqual(updatedWithNewPhoto.image_uri, item.image_uri);
+    assert.ok(
+      updatedWithNewPhoto.image_uri.startsWith(
+        'file:///app/documents/armario_images/'
+      )
+    );
+    assert.equal(testEnv.deletedFiles.length, 1);
+    assert.equal(testEnv.deletedFiles[0], item.image_uri);
   });
 });

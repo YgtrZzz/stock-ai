@@ -163,20 +163,25 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    columnGap: 10,
+    rowGap: 8,
   },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     flex: 1,
+    minWidth: 165,
   },
   titleText: {
     color: TOKENS.text,
     fontSize: 15,
     fontWeight: '600',
+    flexShrink: 1,
+    lineHeight: 20,
   },
   coverageBadge: {
     flexDirection: 'row',
@@ -185,6 +190,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
+    flexShrink: 0,
+    alignSelf: 'flex-start',
   },
   coverageBadgeHealthy: {
     backgroundColor: TOKENS.pillPositiveBg,

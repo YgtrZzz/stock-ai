@@ -39,6 +39,54 @@ async function getSharingAdapter(override) {
   return defaultSharingModule;
 }
 
+async function getFallbackShareAdapter(override) {
+  if (override) return override;
+  try {
+    const rn = await import('react-native');
+    return rn?.Share || null;
+  } catch {
+    return null;
+  }
+}
+
+async function shareFileWithResilientFallback(
+  fileUri,
+  csvContent,
+  dialogTitle,
+  adapters = {}
+) {
+  const Sharing = await getSharingAdapter(adapters.sharing);
+
+  try {
+    if (typeof Sharing?.isAvailableAsync === 'function') {
+      const disponivel = await Sharing.isAvailableAsync();
+      if (!disponivel) {
+        throw new Error(
+          'O compartilhamento nativo não está disponível neste dispositivo.'
+        );
+      }
+    }
+
+    await Sharing.shareAsync(fileUri, {
+      mimeType: 'text/csv',
+      dialogTitle,
+      UTI: 'public.comma-separated-values-text',
+    });
+    return;
+  } catch (error) {
+    const fallbackShare = await getFallbackShareAdapter(adapters.fallbackShare);
+    if (fallbackShare && typeof fallbackShare.share === 'function') {
+      await fallbackShare.share({
+        title: dialogTitle,
+        message: csvContent,
+        url: fileUri,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
 /**
  * Escapa uma célula CSV segundo a RFC 4180, tratando vírgulas, aspas duplas e quebras de linha
  * para evitar corrupção estrutural do arquivo Relatorio_Estoque.csv.
@@ -153,20 +201,12 @@ export async function generateAndShareInventoryCSV(
     encoding: FileSystem.EncodingType?.UTF8 || 'utf8',
   });
 
-  if (typeof Sharing.isAvailableAsync === 'function') {
-    const disponivel = await Sharing.isAvailableAsync();
-    if (!disponivel) {
-      throw new Error(
-        'O compartilhamento nativo não está disponível neste dispositivo.'
-      );
-    }
-  }
-
-  await Sharing.shareAsync(fileUri, {
-    mimeType: 'text/csv',
-    dialogTitle: 'Exportar Relatório de Estoque (CSV)',
-    UTI: 'public.comma-separated-values-text',
-  });
+  await shareFileWithResilientFallback(
+    fileUri,
+    csvContent,
+    'Exportar Relatório de Estoque (CSV)',
+    adapters
+  );
 
   return {
     fileUri,
@@ -240,20 +280,12 @@ export async function generateAndShareMovementsCSV(
     encoding: FileSystem.EncodingType?.UTF8 || 'utf8',
   });
 
-  if (typeof Sharing.isAvailableAsync === 'function') {
-    const disponivel = await Sharing.isAvailableAsync();
-    if (!disponivel) {
-      throw new Error(
-        'O compartilhamento nativo não está disponível neste dispositivo.'
-      );
-    }
-  }
-
-  await Sharing.shareAsync(fileUri, {
-    mimeType: 'text/csv',
-    dialogTitle: 'Exportar Relatório de Movimentações (CSV)',
-    UTI: 'public.comma-separated-values-text',
-  });
+  await shareFileWithResilientFallback(
+    fileUri,
+    csvContent,
+    'Exportar Relatório de Movimentações (CSV)',
+    adapters
+  );
 
   return {
     fileUri,

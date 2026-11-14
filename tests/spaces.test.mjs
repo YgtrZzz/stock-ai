@@ -255,4 +255,38 @@ describe('Visual Map — Spaces Image Storage & Hierarchy Migration (TDD)', () =
     assert.equal(testEnv.deletedFiles.length, 1);
     assert.equal(testEnv.deletedFiles[0], corredorIntermediario.image_uri);
   });
+
+  it('getItemsBySpace returns only items belonging to the selected space_id ordered by newest first', async () => {
+    await dbModule.initDatabase();
+    assert.equal(
+      typeof dbModule.getItemsBySpace,
+      'function',
+      'getItemsBySpace must be exported from database.js'
+    );
+
+    const spA = await dbModule.addSpace('Galpão Central', null, null);
+    const spB = await dbModule.addSpace('Prateleira Lateral', null, null);
+
+    await dbModule.insertItem(
+      'Parafuso M8',
+      spA.id,
+      12,
+      '78900001',
+      'file:///app/cache/Camera/item1.jpg'
+    );
+    await dbModule.insertItem('Chave Inglesa', spB.id, 2, '78900002', null);
+    await dbModule.insertItem('Porca Sextavada', spA.id, 50, null, null);
+    await dbModule.insertItem('Item Sem Local', null, 1, null, null);
+
+    const itemsInA = await dbModule.getItemsBySpace(spA.id);
+    assert.equal(itemsInA.length, 2);
+    assert.equal(itemsInA[0].name, 'Porca Sextavada');
+    assert.equal(itemsInA[0].quantity, 50);
+    assert.equal(itemsInA[1].name, 'Parafuso M8');
+    assert.equal(itemsInA[1].barcode, '78900001');
+    assert.ok(itemsInA[1].image_uri.startsWith(testEnv.documentDirectory));
+
+    const itemsInInvalid = await dbModule.getItemsBySpace(null);
+    assert.deepEqual(itemsInInvalid, []);
+  });
 });

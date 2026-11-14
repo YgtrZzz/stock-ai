@@ -243,4 +243,48 @@ test('CSV Export Engine & B2B ExportButton Integration (TDD)', async (t) => {
       assert.equal(result.rowCount, 1);
     }
   );
+
+  await t.test(
+    'recovers gracefully from Android ERR_SHARING_IN_PROGRESS by falling back to native Share sheet without throwing',
+    async () => {
+      const fallbackCalls = [];
+      const mockFileSystem = {
+        cacheDirectory: 'file:///data/user/0/com.ygtrz.ArmarioDigital/cache/',
+        EncodingType: { UTF8: 'utf8' },
+        async writeAsStringAsync() {},
+      };
+      const stuckExpoSharing = {
+        async isAvailableAsync() {
+          return true;
+        },
+        async shareAsync() {
+          const err = new Error(
+            "Call to function 'ExpoSharing.shareAsync' has been rejected. -> Caused by: Another share request is being processed now."
+          );
+          err.code = 'ERR_SHARING_IN_PROGRESS';
+          throw err;
+        },
+      };
+      const mockFallbackShare = {
+        async share(payload) {
+          fallbackCalls.push(payload);
+          return { action: 'sharedAction' };
+        },
+      };
+
+      const res = await generateAndShareInventoryCSV(
+        [{ id: 1, barcode: '78901', name: 'Item Teste', quantity: 3, space_id: null }],
+        [],
+        {
+          fileSystem: mockFileSystem,
+          sharing: stuckExpoSharing,
+          fallbackShare: mockFallbackShare,
+        }
+      );
+
+      assert.equal(res.rowCount, 1);
+      assert.equal(fallbackCalls.length, 1);
+      assert.match(fallbackCalls[0].message, /Item Teste/);
+    }
+  );
 });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -50,6 +50,7 @@ export default function ExportButton({
   onPress,
 }) {
   const [internalLoading, setInternalLoading] = useState(false);
+  const pressingRef = useRef(false);
   const safeCount = Number.isFinite(Number(itemCount)) ? Number(itemCount) : 0;
   const safeUnits = Number.isFinite(Number(totalUnits))
     ? Number(totalUnits)
@@ -58,8 +59,9 @@ export default function ExportButton({
   const isDisabled = Boolean(disabled || isBusy || safeCount === 0);
 
   const handlePress = async () => {
-    if (isDisabled) return;
+    if (isDisabled || pressingRef.current) return;
 
+    pressingRef.current = true;
     setInternalLoading(true);
     try {
       if (typeof onPress === 'function') {
@@ -74,6 +76,7 @@ export default function ExportButton({
         'Não foi possível gerar ou compartilhar o relatório CSV.'
       );
     } finally {
+      pressingRef.current = false;
       setInternalLoading(false);
     }
   };

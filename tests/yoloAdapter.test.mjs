@@ -270,7 +270,7 @@ describe('YOLO Edge AI Adapter & Profile Summarizer (TDD - Task 2)', () => {
     assert.equal(result.engineStatus, 'fallback');
   });
 
-  it('validates TFLite v3 FlatBuffer magic header (TFL3 at offset 4) and detects placeholder binary assets', () => {
+  it('validates TFLite v3 FlatBuffer magic header (TFL3 at offset 4) and detects placeholder binary assets', async () => {
     assert.equal(typeof validateTfliteModelAsset, 'function');
 
     const placeholderBuf = Buffer.from(
@@ -288,5 +288,21 @@ describe('YOLO Edge AI Adapter & Profile Summarizer (TDD - Task 2)', () => {
     assert.equal(validCheck.isValidFlatBuffer, true);
     assert.equal(validCheck.isPlaceholder, false);
     assert.equal(validCheck.reason, 'valid_tflite_v3');
+
+    // Verifica que o binário instalado em assets/models/yolov8n.tflite é um modelo TFL3 real
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const realAssetBuf = fs.readFileSync(
+      path.resolve(
+        'C:/Users/ygorg/deteccao-de-objetos/ArmarioDigital/assets/models/yolov8n.tflite'
+      )
+    );
+    const assetValidation = validateTfliteModelAsset(realAssetBuf);
+    assert.equal(
+      assetValidation.isValidFlatBuffer,
+      true,
+      'assets/models/yolov8n.tflite must be a real TFL3 FlatBuffer binary'
+    );
+    assert.equal(assetValidation.isPlaceholder, false);
   });
 });

@@ -618,6 +618,39 @@ export async function getItems(searchQuery = '') {
 }
 
 /**
+ * Lista todos os itens vinculados diretamente a um espaço específico (space_id),
+ * ordenados do mais recente para o mais antigo.
+ *
+ * @param {number|string|null} spaceId ID do espaço/local físico.
+ * @returns {Promise<Array<{ id: number, name: string, space_id: number, quantity: number, barcode: string|null, image_uri: string|null, space_name: string|null, created_at: string }>>}
+ */
+export async function getItemsBySpace(spaceId) {
+  const parsedId = parseInt(spaceId, 10);
+  if (!Number.isFinite(parsedId) || parsedId <= 0) {
+    return [];
+  }
+  const db = await initDatabase();
+  return db.getAllAsync(
+    `
+    SELECT
+      items.id,
+      items.name,
+      items.space_id,
+      COALESCE(items.quantity, 1) AS quantity,
+      items.barcode,
+      items.image_uri,
+      spaces.name AS space_name,
+      items.created_at
+    FROM items
+    LEFT JOIN spaces ON items.space_id = spaces.id
+    WHERE items.space_id = ?
+    ORDER BY items.id DESC;
+    `,
+    [parsedId]
+  );
+}
+
+/**
  * Importa/atualiza um lote de mercadorias (Bulk Upsert B2B) a partir de registros de catálogo/CSV.
  * - Se o SKU (barcode) já existir, atualiza nome, quantidade e espaço preservando o image_uri existente.
  * - Se o espaço informado não existir (e não for 'Sem local definido'), cria o espaço automaticamente.
@@ -754,7 +787,7 @@ export async function updateItemQuantity(id, newQuantity, reason = null) {
  */
 export async function updateItemDetails(
   id,
-  { name, space_id, barcode } = {}
+  { name, space_id, barcode, image_uri } = {}
 ) {
   const nome = limparNome(name);
   const db = await initDatabase();
@@ -775,10 +808,23 @@ export async function updateItemDetails(
       ? anterior.barcode
       : String(barcode ?? '').trim() || null;
 
+  const nextImageUri =
+    image_uri === undefined
+      ? anterior.image_uri
+      : await persistCapturedImage(image_uri);
+
   await db.runAsync(
-    'UPDATE items SET name = ?, space_id = ?, barcode = ? WHERE id = ?;',
-    [nome, nextSpaceId, nextBarcode, id]
+    'UPDATE items SET name = ?, space_id = ?, barcode = ?, image_uri = ? WHERE id = ?;',
+    [nome, nextSpaceId, nextBarcode, nextImageUri, id]
   );
+
+  if (
+    image_uri !== undefined &&
+    anterior.image_uri &&
+    anterior.image_uri !== nextImageUri
+  ) {
+    await deletePersistedImageIfOwned(anterior.image_uri);
+  }
 
   if (nextSpaceId !== anterior.space_id) {
     await recordStockMovement(db, {
@@ -797,7 +843,7 @@ export async function updateItemDetails(
     space_id: nextSpaceId,
     quantity: anterior.quantity,
     barcode: nextBarcode,
-    image_uri: anterior.image_uri,
+    image_uri: nextImageUri,
   };
 }
 
@@ -870,6 +916,7 @@ export default {
   updateItemImage,
   getItemByBarcode,
   getItems,
+  getItemsBySpace,
   bulkUpsertItemsFromCatalog,
   updateItemQuantity,
   updateItemDetails,

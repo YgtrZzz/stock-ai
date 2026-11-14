@@ -23,6 +23,7 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -67,6 +68,7 @@ import {
   updateItemImage,
   getItemByBarcode,
   getItems,
+  getItemsBySpace,
   bulkUpsertItemsFromCatalog,
   updateItemQuantity,
   updateItemDetails,
@@ -88,20 +90,50 @@ import {
 } from './vision/yoloAdapter';
 
 const YOLO_MODEL_ASSET = require('./assets/models/yolov8n.tflite');
-const YOLO_DELEGATES = Platform.OS === 'ios' ? ['core-ml'] : ['android-gpu'];
+const YOLO_DELEGATES = Platform.OS === 'ios' ? ['core-ml'] : [];
 
 const Tab = createBottomTabNavigator();
 
 const STORAGE_KEY_PROFILE = '@armario_digital:user_profile';
 
 /**
- * Contexto global de Perfil de Uso ('home' | 'business' | null)
+ * Contexto global de Perfil de Uso ('home' | 'business' | null) + Lightbox de Fotos
  */
 const ProfileContext = createContext({
   userProfile: null,
   selectProfile: async () => {},
   resetProfile: async () => {},
+  openLightbox: () => {},
 });
+
+/**
+ * Hook que monitora se o teclado virtual está aberto (keyboardDidShow / keyboardDidHide)
+ * para aplicar espaçamento extra apenas enquanto o teclado estiver ativo (sem vazio no rodapé).
+ */
+function useKeyboardVisible() {
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent =
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const subShow = Keyboard.addListener(showEvent, () => {
+      setKeyboardVisible(true);
+    });
+    const subHide = Keyboard.addListener(hideEvent, () => {
+      setKeyboardVisible(false);
+    });
+
+    return () => {
+      subShow?.remove?.();
+      subHide?.remove?.();
+    };
+  }, []);
+
+  return keyboardVisible;
+}
 
 /**
  * Design Tokens estritos do estilo 'true-black-flat' (design-taste-frontend):
@@ -270,9 +302,10 @@ function OnboardingScreen({ onSelectProfile }) {
    ABA 1: SCANNER (Adaptação Dinâmica: 'home' vs 'business')
    ========================================================== */
 function ScannerScreen({ onInventoryUpdated }) {
-  const { userProfile } = useContext(ProfileContext);
+  const { userProfile, openLightbox } = useContext(ProfileContext);
   const isHome = userProfile === 'home';
   const isBusiness = userProfile === 'business';
+  const keyboardVisible = useKeyboardVisible();
 
   const [permission, requestPermission] = useCameraPermissions();
   const yoloPlugin = useTensorflowModel(YOLO_MODEL_ASSET, YOLO_DELEGATES);
@@ -280,6 +313,7 @@ function ScannerScreen({ onInventoryUpdated }) {
   const [nome, setNome] = useState('');
   const [quantidade, setQuantidade] = useState('1');
   const [currentBarcode, setCurrentBarcode] = useState(null);
+  const [matchedExistingItem, setMatchedExistingItem] = useState(null);
   const [capturedImage, setCapturedImage] = useState(null);
   const [yoloDetections, setYoloDetections] = useState([]);
   const [aCapturarFoto, setACapturarFoto] = useState(false);
@@ -303,8 +337,10 @@ function ScannerScreen({ onInventoryUpdated }) {
           if (!ativo) return;
           setEspacos(lista);
           setEspacoSelecionadoId((atual) => {
-            if (atual && lista.some((e) => e.id === atual)) return atual;
-            return lista.length > 0 ? lista[0].id : null;
+            if (atual !== null && lista.some((e) => e.id === atual)) {
+              return atual;
+            }
+            return null;
           });
         } catch (error) {
           console.error('Erro ao carregar espaços no Scanner:', error);
@@ -318,7 +354,7 @@ function ScannerScreen({ onInventoryUpdated }) {
     }, [])
   );
 
-  // Leitura de Código de Barras (Ativo exclusivamente no perfil 'business')
+  // Passo 1 (B2B): Leitura de Código de Barras prepara o formulário sem salvar automaticamente
   const handleBarcodeScanned = async ({ data }) => {
     if (!isBusiness) return;
 
@@ -339,57 +375,32 @@ function ScannerScreen({ onInventoryUpdated }) {
 
     try {
       const itemExistente = await getItemByBarcode(valorLido);
+      setCurrentBarcode(valorLido);
 
       if (itemExistente) {
-        const novaQtd = Number(itemExistente.quantity ?? 1) + 1;
-        await updateItemQuantity(itemExistente.id, novaQtd);
-        if (capturedImage) {
-          await updateItemImage(itemExistente.id, capturedImage);
-          setCapturedImage(null);
-          setYoloDetections([]);
-        }
-
-        setCurrentBarcode(null);
-        setNome('');
-        setQuantidade('1');
-        Keyboard.dismiss();
-
-        Vibration.vibrate([0, 200, 200, 200]);
-        onInventoryUpdated?.();
-
-        Alert.alert(
-          '+1 adicionado ao estoque',
-          `"${itemExistente.name}" atualizado para ${novaQtd} un.`,
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                lastScannedRef.current = '';
-                setLastScannedData('');
-                processandoScanRef.current = false;
-              },
-            },
-          ]
-        );
+        setMatchedExistingItem(itemExistente);
+        setNome(String(itemExistente.name ?? ''));
+        setEspacoSelecionadoId(itemExistente.space_id ?? null);
+        Vibration.vibrate([0, 120, 80, 120]);
       } else {
-        setCurrentBarcode(valorLido);
+        setMatchedExistingItem(null);
         Vibration.vibrate(100);
-        processandoScanRef.current = false;
       }
     } catch (error) {
       console.error('Erro ao buscar item por código de barras:', error);
+    } finally {
       processandoScanRef.current = false;
     }
   };
 
-  // Captura de fotografia nativa na CameraView via takePictureAsync() + Inferência YOLO
+  // Passo 1: Captura de fotografia nativa na CameraView + Inferência YOLO (sem abrir teclado ou salvar sozinho)
   const handleTirarFotoItem = async () => {
     if (aCapturarFoto || !cameraRef.current?.takePictureAsync) return;
 
     setACapturarFoto(true);
     try {
       const foto = await cameraRef.current.takePictureAsync({
-        quality: 0.65,
+        quality: 0.7,
       });
       if (foto?.uri) {
         setCapturedImage(foto.uri);
@@ -406,7 +417,6 @@ function ScannerScreen({ onInventoryUpdated }) {
         );
         setYoloDetections(resultadoYolo.detections);
         Vibration.vibrate(80);
-        inputNomeRef.current?.focus();
       }
     } catch (error) {
       console.error('Erro ao capturar foto do item:', error);
@@ -436,7 +446,14 @@ function ScannerScreen({ onInventoryUpdated }) {
     [nome]
   );
 
-  // Atalho de controle rápido de lote (Perfil 'business')
+  // Passo 2: Ajuste de quantidade por stepper (- / +) ou lote rápido
+  const handleAjustarQuantidade = (delta) => {
+    const atual = parseInt(quantidade.replace(/[^0-9]/g, ''), 10);
+    const base = Number.isFinite(atual) && atual > 0 ? atual : 1;
+    const proximo = Math.max(1, base + delta);
+    setQuantidade(String(proximo));
+  };
+
   const handleSomarLote = (incremento) => {
     const atual = parseInt(quantidade.replace(/[^0-9]/g, ''), 10);
     const base = Number.isFinite(atual) && atual > 0 ? atual : 0;
@@ -445,6 +462,7 @@ function ScannerScreen({ onInventoryUpdated }) {
 
   const nomeValido = nome.trim().length > 0;
 
+  // Passo 4: Único gatilho que efetivamente salva/atualiza o item no SQLite
   const handleSalvar = async () => {
     const nomeLimpo = nome.trim();
     if (!nomeLimpo || aGuardar) return;
@@ -454,21 +472,42 @@ function ScannerScreen({ onInventoryUpdated }) {
 
     setAGuardar(true);
     try {
-      await insertItem(
-        nomeLimpo,
-        espacoSelecionadoId,
-        qtdFinal,
-        isBusiness ? currentBarcode : null,
-        capturedImage
-      );
+      if (isBusiness && matchedExistingItem) {
+        const novaQtdTotal =
+          Number(matchedExistingItem.quantity ?? 0) + qtdFinal;
+        await updateItemQuantity(
+          matchedExistingItem.id,
+          novaQtdTotal,
+          'entrada_estoque'
+        );
+        await updateItemDetails(matchedExistingItem.id, {
+          name: nomeLimpo,
+          space_id: espacoSelecionadoId,
+          barcode: currentBarcode,
+          image_uri: capturedImage || matchedExistingItem.image_uri || null,
+        });
+      } else {
+        await insertItem(
+          nomeLimpo,
+          espacoSelecionadoId,
+          qtdFinal,
+          isBusiness ? currentBarcode : null,
+          capturedImage
+        );
+      }
+
       const espacoEscolhido = espacos.find((e) => e.id === espacoSelecionadoId);
       const destinoTexto = espacoEscolhido
         ? ` em "${formatarNomeEspaco(espacoEscolhido)}"`
-        : '';
+        : ' (Sem local definido)';
+
+      const eraExistente = Boolean(isBusiness && matchedExistingItem);
 
       setNome('');
       setQuantidade('1');
+      setEspacoSelecionadoId(null);
       setCurrentBarcode(null);
+      setMatchedExistingItem(null);
       setCapturedImage(null);
       setYoloDetections([]);
       lastScannedRef.current = '';
@@ -478,8 +517,10 @@ function ScannerScreen({ onInventoryUpdated }) {
       onInventoryUpdated?.();
 
       Alert.alert(
-        'Item salvo',
-        `${qtdFinal}x "${nomeLimpo}" guardado${destinoTexto} com sucesso.`
+        eraExistente ? 'Estoque atualizado' : 'Item salvo com sucesso',
+        eraExistente
+          ? `+${qtdFinal} un. somadas ao SKU "${nomeLimpo}"${destinoTexto}.`
+          : `${qtdFinal}x "${nomeLimpo}" registrado${destinoTexto}.`
       );
     } catch (error) {
       console.error('Erro ao salvar item:', error);
@@ -519,6 +560,50 @@ function ScannerScreen({ onInventoryUpdated }) {
       );
     }
 
+    // Quando já há uma fotografia capturada, exibe a própria foto enquadrada no estúdio óptico (sem cortes!)
+    if (capturedImage) {
+      return (
+        <View style={styles.capturedStageWrapper}>
+          <TouchableOpacity
+            style={styles.capturedStageTouch}
+            activeOpacity={0.9}
+            onPress={() =>
+              openLightbox(capturedImage, nome.trim() || 'Foto capturada')
+            }
+          >
+            <Image
+              source={{ uri: capturedImage }}
+              style={styles.capturedStageImage}
+              resizeMode="contain"
+              onError={() => {
+                setCapturedImage(null);
+                setYoloDetections([]);
+              }}
+            />
+          </TouchableOpacity>
+
+          <View style={styles.capturedStageTopBar} pointerEvents="none">
+            <View style={styles.capturedStageBadge}>
+              <Check
+                size={13}
+                color={TOKENS.pillPositiveInk}
+                strokeWidth={2}
+              />
+              <Text style={styles.capturedStageBadgeText}>
+                Foto pronta · Toque na imagem para ampliar
+              </Text>
+            </View>
+          </View>
+
+          <YoloCameraOverlay
+            detections={yoloDetections}
+            userProfile={userProfile}
+            onApplySuggestion={handleAplicarSugestaoYolo}
+          />
+        </View>
+      );
+    }
+
     // Ciclo de vida estrito: desmonta CameraView e YoloCameraOverlay quando a aba está inativa
     return isFocused ? (
       <View style={styles.activeCameraWrapper}>
@@ -542,31 +627,14 @@ function ScannerScreen({ onInventoryUpdated }) {
           }
           onBarcodeScanned={isBusiness ? handleBarcodeScanned : undefined}
         />
-        <View
-          style={[
-            styles.yoloEngineStatusPill,
-            yoloEngineStatus.isReady && styles.yoloEngineStatusPillReady,
-          ]}
-          pointerEvents="none"
-        >
-          {yoloEngineStatus.isReady ? (
-            <Layers
-              size={13}
-              color={TOKENS.pillPositiveInk}
-              strokeWidth={1.75}
-            />
-          ) : (
-            <ScanBarcode size={13} color={TOKENS.muted} strokeWidth={1.5} />
-          )}
-          <Text
-            style={[
-              styles.yoloEngineStatusText,
-              yoloEngineStatus.isReady && styles.yoloEngineStatusTextReady,
-            ]}
-          >
-            {yoloEngineStatus.badgeLabel}
-          </Text>
+        {/* Cantoneiras ópticas de enquadramento (Retículo) */}
+        <View style={styles.opticalReticleLayer} pointerEvents="none">
+          <View style={[styles.opticalCorner, styles.opticalCornerTL]} />
+          <View style={[styles.opticalCorner, styles.opticalCornerTR]} />
+          <View style={[styles.opticalCorner, styles.opticalCornerBL]} />
+          <View style={[styles.opticalCorner, styles.opticalCornerBR]} />
         </View>
+
         <YoloCameraOverlay
           detections={yoloDetections}
           userProfile={userProfile}
@@ -581,164 +649,206 @@ function ScannerScreen({ onInventoryUpdated }) {
   return (
     <KeyboardAvoidingView
       style={styles.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 76}
     >
-      {/* Visor óptico no topo */}
-      <View style={styles.cameraContainer}>{renderCamera()}</View>
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={[
+          styles.scannerScrollContent,
+          keyboardVisible && styles.scrollContentKeyboardActive,
+        ]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Estúdio de Câmera Limpo: Visor Óptico + Botão de Captura Embaixo */}
+        <View style={styles.cameraStageCard}>
+          <View style={styles.cameraContainer}>{renderCamera()}</View>
 
-      {/* Painel adaptado dinamicamente ao perfil ('home' vs 'business') */}
-      <View style={styles.scannerSheet}>
-        {/* PERFIL HOME: Destaque visual para o grande botão 'Tirar Foto do Item' */}
-        {isHome && (
-          <View style={styles.homeCaptureSection}>
-            <TouchableOpacity
-              style={[
-                styles.capturePhotoHeroButton,
-                (!permission?.granted || aCapturarFoto) &&
-                  styles.controlDisabled,
-              ]}
-              activeOpacity={0.85}
-              onPress={handleTirarFotoItem}
-              disabled={!permission?.granted || aCapturarFoto}
-            >
-              {aCapturarFoto ? (
-                <ActivityIndicator color={TOKENS.ground} />
-              ) : (
-                <View style={styles.buttonContentRow}>
-                  <Camera size={18} color={TOKENS.ground} strokeWidth={1.75} />
-                  <Text style={styles.capturePhotoHeroButtonText}>
-                    Tirar Foto do Item
+          {/* Botão de Captura na base (limpo, direto e consistente em Casa e Negócio) */}
+          <View style={styles.cameraShutterDock}>
+            {!capturedImage ? (
+              <TouchableOpacity
+                style={[
+                  styles.shutterDockPrimaryButton,
+                  (!permission?.granted || aCapturarFoto) &&
+                    styles.controlDisabled,
+                ]}
+                activeOpacity={0.86}
+                onPress={handleTirarFotoItem}
+                disabled={!permission?.granted || aCapturarFoto}
+              >
+                <View style={styles.shutterEmblemOuter}>
+                  <View style={styles.shutterEmblemInner}>
+                    {aCapturarFoto ? (
+                      <ActivityIndicator size="small" color={TOKENS.ground} />
+                    ) : (
+                      <Camera
+                        size={16}
+                        color={TOKENS.ground}
+                        strokeWidth={2}
+                      />
+                    )}
+                  </View>
+                </View>
+
+                <View style={styles.shutterDockTextCol}>
+                  <Text style={styles.shutterDockTitle}>
+                    {aCapturarFoto
+                      ? 'Capturando foto...'
+                      : isHome
+                        ? 'Tirar Foto do Item'
+                        : 'Tirar Foto do Produto'}
+                  </Text>
+                  <Text style={styles.shutterDockSubtitle} numberOfLines={1}>
+                    {isHome
+                      ? 'Toque aqui para fotografar o item'
+                      : 'Aponte para o código de barras ou toque para fotografar'}
                   </Text>
                 </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* PERFIL BUSINESS: Banner de Código de Barras Escaneado + Captura Opcional de Avatar */}
-        {isBusiness && (
-          <View style={styles.businessTopCaptureBar}>
-            {currentBarcode ? (
-              <View style={styles.scannedBarcodePillFlex}>
-                <View style={styles.scannedBarcodeLeft}>
-                  <Barcode
-                    size={16}
-                    color={TOKENS.pillPositiveInk}
-                    strokeWidth={1.5}
-                  />
-                  <Text style={styles.scannedBarcodeText} numberOfLines={1}>
-                    Código escaneado: {currentBarcode}
-                  </Text>
-                </View>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.capturedDockActionsRow}>
                 <TouchableOpacity
-                  onPress={() => {
-                    setCurrentBarcode(null);
-                    lastScannedRef.current = '';
-                    setLastScannedData('');
-                    processandoScanRef.current = false;
-                  }}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.capturedDockSecondaryBtn}
+                  activeOpacity={0.82}
+                  onPress={() =>
+                    openLightbox(
+                      capturedImage,
+                      nome.trim() || 'Foto capturada'
+                    )
+                  }
                 >
-                  <X
-                    size={16}
-                    color={TOKENS.pillPositiveInk}
-                    strokeWidth={1.5}
+                  <Search size={15} color={TOKENS.text} strokeWidth={1.75} />
+                  <Text style={styles.capturedDockSecondaryBtnText}>
+                    Ampliar Foto
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.capturedDockPrimaryBtn}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setCapturedImage(null);
+                    setYoloDetections([]);
+                    Vibration.vibrate(40);
+                  }}
+                >
+                  <RefreshCw
+                    size={15}
+                    color={TOKENS.ground}
+                    strokeWidth={2}
                   />
+                  <Text style={styles.capturedDockPrimaryBtnText}>
+                    Tirar Outra Foto
+                  </Text>
                 </TouchableOpacity>
               </View>
-            ) : null}
-
-            <TouchableOpacity
-              style={[
-                styles.businessCameraPill,
-                (!permission?.granted || aCapturarFoto) &&
-                  styles.controlDisabled,
-              ]}
-              activeOpacity={0.82}
-              onPress={handleTirarFotoItem}
-              disabled={!permission?.granted || aCapturarFoto}
-            >
-              {aCapturarFoto ? (
-                <ActivityIndicator size="small" color={TOKENS.text} />
-              ) : (
-                <View style={styles.buttonContentRow}>
-                  <Camera size={15} color={TOKENS.text} strokeWidth={1.5} />
-                  <Text style={styles.businessCameraPillText}>
-                    {capturedImage ? 'Nova foto' : 'Tirar foto'}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            )}
           </View>
-        )}
+        </View>
 
-        {/* Miniatura temporária no formulário para confirmar a captura (capturedImage) */}
-        {capturedImage && (
-          <View style={styles.capturedPreviewContainer}>
-            <Image
-              source={{ uri: capturedImage }}
-              style={styles.capturedPreviewThumb}
-              resizeMode="cover"
-              onError={() => {
-                setCapturedImage(null);
-                setYoloDetections([]);
-              }}
-            />
-            <View style={styles.capturedPreviewTextCol}>
-              <View style={styles.capturedPreviewStatusRow}>
-                <Check
-                  size={14}
-                  color={TOKENS.pillPositiveInk}
-                  strokeWidth={1.75}
-                />
-                <Text style={styles.capturedPreviewTitle} numberOfLines={1}>
-                  Fotografia capturada
-                </Text>
-              </View>
-              <Text style={styles.capturedPreviewSubtitle} numberOfLines={1}>
-                Miniatura pronta para ser guardada em armazenamento permanente
-              </Text>
+        {/* Painel Guiado em 4 Passos: 1. Nome/Código -> 2. Quantidade -> 3. Local -> 4. Salvar Item */}
+        <View style={styles.scannerSheet}>
+          <View style={styles.stepHeaderRow}>
+            <View style={styles.stepNumberBadge}>
+              <Text style={styles.stepNumberBadgeText}>1</Text>
             </View>
-            <TouchableOpacity
-              style={styles.capturedPreviewRemoveBtn}
-              onPress={() => {
-                setCapturedImage(null);
-                setYoloDetections([]);
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <View style={styles.inputRow}>
-          <View style={styles.nameColumn}>
-            <Text style={styles.label}>
-              {isHome ? 'Nome do item doméstico' : 'Nome do produto (SKU)'}
+            <Text style={styles.stepHeaderTitle}>
+              {isHome
+                ? 'Identificar o item'
+                : 'Identificar produto ou código SKU'}
             </Text>
-            <TextInput
-              ref={inputNomeRef}
-              style={styles.input}
-              value={nome}
-              onChangeText={setNome}
-              placeholder={
-                isHome
-                  ? 'Ex: Casaco de Inverno, Furadeira'
-                  : 'Ex: Caixa de Parafusos M6'
-              }
-              placeholderTextColor={TOKENS.faint}
-              maxLength={60}
-              returnKeyType="done"
-              onSubmitEditing={handleSalvar}
-              editable={!aGuardar}
-            />
           </View>
 
-          <View style={styles.qtyColumn}>
-            <Text style={styles.label}>Quantidade</Text>
+          {/* Banner de Código de Barras Escaneado no Perfil Business */}
+          {isBusiness && currentBarcode ? (
+            <View style={styles.scannedBarcodeBanner}>
+              <View style={styles.scannedBarcodeLeft}>
+                <Barcode
+                  size={16}
+                  color={TOKENS.pillPositiveInk}
+                  strokeWidth={1.5}
+                />
+                <View style={styles.scannedBarcodeTextCol}>
+                  <Text style={styles.scannedBarcodeText} numberOfLines={1}>
+                    Código: {currentBarcode}
+                  </Text>
+                  {matchedExistingItem ? (
+                    <Text style={styles.scannedBarcodeSubtext}>
+                      SKU já cadastrado ({matchedExistingItem.quantity} un. em
+                      estoque). Defina quanto somar abaixo e toque em Salvar.
+                    </Text>
+                  ) : (
+                    <Text style={styles.scannedBarcodeSubtext}>
+                      Novo SKU lido. Informe o nome, quantidade, local e salve.
+                    </Text>
+                  )}
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  setCurrentBarcode(null);
+                  setMatchedExistingItem(null);
+                  lastScannedRef.current = '';
+                  setLastScannedData('');
+                  processandoScanRef.current = false;
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <X
+                  size={16}
+                  color={TOKENS.pillPositiveInk}
+                  strokeWidth={1.5}
+                />
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          <Text style={styles.label}>
+            {isHome ? 'Nome do item doméstico' : 'Nome do produto (SKU)'}
+          </Text>
+          <TextInput
+            ref={inputNomeRef}
+            style={styles.input}
+            value={nome}
+            onChangeText={setNome}
+            placeholder={
+              isHome
+                ? 'Ex: Casaco de Inverno, Furadeira'
+                : 'Ex: Caixa de Parafusos M6'
+            }
+            placeholderTextColor={TOKENS.faint}
+            maxLength={60}
+            returnKeyType="done"
+            onSubmitEditing={() => Keyboard.dismiss()}
+            editable={!aGuardar}
+          />
+
+          {/* PASSO 2: DEFINIR QUANTIDADE */}
+          <View style={styles.stepHeaderRow}>
+            <View style={styles.stepNumberBadge}>
+              <Text style={styles.stepNumberBadgeText}>2</Text>
+            </View>
+            <Text style={styles.stepHeaderTitle}>
+              {matchedExistingItem
+                ? 'Quantidade a adicionar ao estoque'
+                : 'Definir quantidade'}
+            </Text>
+          </View>
+
+          <View style={styles.qtyStepperRow}>
+            <TouchableOpacity
+              style={styles.qtyStepButton}
+              activeOpacity={0.78}
+              onPress={() => handleAjustarQuantidade(-1)}
+              disabled={aGuardar}
+            >
+              <Minus size={18} color={TOKENS.text} strokeWidth={1.75} />
+            </TouchableOpacity>
+
             <TextInput
-              style={[styles.input, styles.qtyInput]}
+              style={[styles.input, styles.qtyStepperInput]}
               value={quantidade}
               onChangeText={(txt) => setQuantidade(txt.replace(/[^0-9]/g, ''))}
               placeholder="1"
@@ -746,16 +856,23 @@ function ScannerScreen({ onInventoryUpdated }) {
               keyboardType="numeric"
               maxLength={5}
               returnKeyType="done"
-              onSubmitEditing={handleSalvar}
+              onSubmitEditing={() => Keyboard.dismiss()}
               editable={!aGuardar}
             />
-          </View>
-        </View>
 
-        {/* PERFIL BUSINESS: Botões de controle rápido de lote */}
-        {isBusiness && (
+            <TouchableOpacity
+              style={styles.qtyStepButtonPrimary}
+              activeOpacity={0.8}
+              onPress={() => handleAjustarQuantidade(1)}
+              disabled={aGuardar}
+            >
+              <Plus size={18} color={TOKENS.ground} strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Atalhos de lote rápido */}
           <View style={styles.batchControlsRow}>
-            <Text style={styles.batchLabel}>Lote rápido:</Text>
+            <Text style={styles.batchLabel}>Atalhos de qtd:</Text>
             <View style={styles.batchPillsGroup}>
               {LOTES_RAPIDOS_B2B.map((valor) => (
                 <TouchableOpacity
@@ -776,105 +893,106 @@ function ScannerScreen({ onInventoryUpdated }) {
               </TouchableOpacity>
             </View>
           </View>
-        )}
 
-        <Text style={styles.label}>
-          {isHome ? 'Guardar em qual cômodo/local?' : 'Local de armazenagem'}
-        </Text>
-        {espacos.length === 0 ? (
-          <View style={styles.noSpacesBox}>
-            <Text style={styles.noSpacesText}>
-              Nenhum espaço cadastrado. Crie locais na aba Espaços ou salve sem
-              local.
+          {/* PASSO 3: ESCOLHER LOCAL DE ARMAZENAGEM */}
+          <View style={styles.stepHeaderRow}>
+            <View style={styles.stepNumberBadge}>
+              <Text style={styles.stepNumberBadgeText}>3</Text>
+            </View>
+            <Text style={styles.stepHeaderTitle}>
+              {isHome
+                ? 'Escolher cômodo ou local'
+                : 'Escolher local de armazenagem'}
             </Text>
           </View>
-        ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.selectorRow}
-          >
-            {espacos.map((espaco) => {
-              const selecionado = espacoSelecionadoId === espaco.id;
-              return (
-                <TouchableOpacity
-                  key={espaco.id}
-                  style={[
-                    styles.spaceChip,
-                    selecionado && styles.spaceChipActive,
-                  ]}
-                  activeOpacity={0.8}
-                  onPress={() => setEspacoSelecionadoId(espaco.id)}
-                >
-                  <MapPin
-                    size={13}
-                    color={selecionado ? TOKENS.ground : TOKENS.muted}
-                    strokeWidth={1.5}
-                  />
-                  <Text
-                    style={[
-                      styles.spaceChipText,
-                      selecionado && styles.spaceChipTextActive,
-                    ]}
-                  >
-                    {formatarNomeEspaco(espaco)}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-            <TouchableOpacity
-              style={[
-                styles.spaceChip,
-                espacoSelecionadoId === null && styles.spaceChipActive,
-              ]}
-              activeOpacity={0.8}
-              onPress={() => setEspacoSelecionadoId(null)}
-            >
-              <Text
-                style={[
-                  styles.spaceChipText,
-                  espacoSelecionadoId === null && styles.spaceChipTextActive,
-                ]}
-              >
-                Sem local
-              </Text>
-            </TouchableOpacity>
-          </ScrollView>
-        )}
-
-        <TouchableOpacity
-          style={[
-            isHome ? styles.secondarySaveButton : styles.primaryInvertedButton,
-            (!nomeValido || aGuardar) && styles.controlDisabled,
-          ]}
-          activeOpacity={0.85}
-          onPress={handleSalvar}
-          disabled={!nomeValido || aGuardar}
-        >
-          {aGuardar ? (
-            <ActivityIndicator
-              color={isHome ? TOKENS.text : TOKENS.ground}
-            />
-          ) : (
-            <View style={styles.buttonContentRow}>
-              <Plus
-                size={16}
-                color={isHome ? TOKENS.text : TOKENS.ground}
-                strokeWidth={1.75}
-              />
-              <Text
-                style={
-                  isHome
-                    ? styles.secondarySaveButtonText
-                    : styles.primaryInvertedButtonText
-                }
-              >
-                Salvar Item
+          {espacos.length === 0 ? (
+            <View style={styles.noSpacesBox}>
+              <Text style={styles.noSpacesText}>
+                Nenhum espaço cadastrado. Crie locais na aba Espaços ou salve sem
+                local.
               </Text>
             </View>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.selectorRow}
+            >
+              <TouchableOpacity
+                style={[
+                  styles.spaceChip,
+                  espacoSelecionadoId === null && styles.spaceChipActive,
+                ]}
+                activeOpacity={0.8}
+                onPress={() => setEspacoSelecionadoId(null)}
+              >
+                <Text
+                  style={[
+                    styles.spaceChipText,
+                    espacoSelecionadoId === null && styles.spaceChipTextActive,
+                  ]}
+                >
+                  Sem local
+                </Text>
+              </TouchableOpacity>
+
+              {espacos.map((espaco) => {
+                const selecionado = espacoSelecionadoId === espaco.id;
+                return (
+                  <TouchableOpacity
+                    key={espaco.id}
+                    style={[
+                      styles.spaceChip,
+                      selecionado && styles.spaceChipActive,
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => setEspacoSelecionadoId(espaco.id)}
+                  >
+                    <MapPin
+                      size={13}
+                      color={selecionado ? TOKENS.ground : TOKENS.muted}
+                      strokeWidth={1.5}
+                    />
+                    <Text
+                      style={[
+                        styles.spaceChipText,
+                        selecionado && styles.spaceChipTextActive,
+                      ]}
+                    >
+                      {formatarNomeEspaco(espaco)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
           )}
-        </TouchableOpacity>
-      </View>
+
+          {/* PASSO 4: CONFIRMAR E SALVAR ITEM */}
+          <TouchableOpacity
+            style={[
+              styles.primaryInvertedButton,
+              (!nomeValido || aGuardar) && styles.controlDisabled,
+            ]}
+            activeOpacity={0.85}
+            onPress={handleSalvar}
+            disabled={!nomeValido || aGuardar}
+          >
+            {aGuardar ? (
+              <ActivityIndicator color={TOKENS.ground} />
+            ) : (
+              <View style={styles.buttonContentRow}>
+                <Check size={17} color={TOKENS.ground} strokeWidth={2} />
+                <Text style={styles.primaryInvertedButtonText}>
+                  {matchedExistingItem
+                    ? `Somar +${quantidade || '1'} un. e Salvar`
+                    : 'Salvar Item no Armário'}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -883,14 +1001,16 @@ function ScannerScreen({ onInventoryUpdated }) {
    ABA 2: ESPAÇOS (Mapa Visual + Drill-down em True-Black Flat)
    ========================================================== */
 function EspacosScreen() {
-  const { userProfile } = useContext(ProfileContext);
+  const { userProfile, openLightbox } = useContext(ProfileContext);
   const isHome = userProfile === 'home';
+  const keyboardVisible = useKeyboardVisible();
 
   const [permission, requestPermission] = useCameraPermissions();
   const isFocused = useIsFocused();
   const spaceCameraRef = useRef(null);
 
   const [espacos, setEspacos] = useState([]);
+  const [itensNoEspaco, setItensNoEspaco] = useState([]);
   const [currentParentId, setCurrentParentId] = useState(null);
   const [nomeEspaco, setNomeEspaco] = useState('');
   const [capturedSpaceImage, setCapturedSpaceImage] = useState(null);
@@ -898,6 +1018,7 @@ function EspacosScreen() {
   const [cameraAberta, setCameraAberta] = useState(false);
   const [aCapturarFotoEspaco, setACapturarFotoEspaco] = useState(false);
   const [failedSpaceImageIds, setFailedSpaceImageIds] = useState({});
+  const [failedSpaceItemImageIds, setFailedSpaceItemImageIds] = useState({});
   const [aCarregar, setACarregar] = useState(false);
   const [aCriar, setACriar] = useState(false);
 
@@ -907,17 +1028,51 @@ function EspacosScreen() {
     );
   }, []);
 
+  const handleSpaceItemImageError = useCallback((itemId) => {
+    setFailedSpaceItemImageIds((prev) =>
+      prev[itemId] ? prev : { ...prev, [itemId]: true }
+    );
+  }, []);
+
   const carregarEspacos = useCallback(async () => {
     setACarregar(true);
     try {
-      const lista = await getSpaces();
+      const [lista, itensLocal] = await Promise.all([
+        getSpaces(),
+        currentParentId !== null
+          ? getItemsBySpace(currentParentId)
+          : Promise.resolve([]),
+      ]);
       setEspacos(lista);
+      setItensNoEspaco(itensLocal);
     } catch (error) {
       console.error('Erro ao listar espaços:', error);
     } finally {
       setACarregar(false);
     }
-  }, []);
+  }, [currentParentId]);
+
+  useEffect(() => {
+    let ativo = true;
+    async function carregarItensDoEspaco() {
+      if (currentParentId === null) {
+        setItensNoEspaco([]);
+        return;
+      }
+      try {
+        const itensLocal = await getItemsBySpace(currentParentId);
+        if (ativo) {
+          setItensNoEspaco(itensLocal);
+        }
+      } catch (error) {
+        console.error('Erro ao carregar itens do espaço selecionado:', error);
+      }
+    }
+    carregarItensDoEspaco();
+    return () => {
+      ativo = false;
+    };
+  }, [currentParentId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1080,226 +1235,291 @@ function EspacosScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 76}
     >
-      {currentParentId !== null && (
-        <View style={styles.drilldownBar}>
-          <TouchableOpacity
-            style={styles.secondaryPillButton}
-            activeOpacity={0.8}
-            onPress={handleVoltar}
-          >
-            <ArrowLeft size={15} color={TOKENS.text} strokeWidth={1.5} />
-            <Text style={styles.secondaryPillButtonText}>Voltar</Text>
-          </TouchableOpacity>
-          <View style={styles.breadcrumbBox}>
-            <Text style={styles.breadcrumbLabel}>Nível atual</Text>
-            <Text style={styles.breadcrumbTitle} numberOfLines={1}>
-              {espacoAtual ? formatarNomeEspaco(espacoAtual) : 'Sub-espaço'}
-            </Text>
-          </View>
-        </View>
-      )}
-
-      <View style={styles.spaceFormCard}>
-        <View style={styles.spaceFormHeaderRow}>
-          <Text style={[styles.label, styles.spaceFormLabelFlex]}>
-            {editingSpace
-              ? `Editando local: "${editingSpace.name}"`
-              : currentParentId === null
-                ? isHome
-                  ? 'Novo cômodo principal (Mapa Visual)'
-                  : 'Novo espaço principal (ex: Estoque Central)'
-                : `Novo sub-espaço em "${espacoAtual?.name || ''}"`}
-          </Text>
-
-          <TouchableOpacity
-            style={styles.businessCameraPill}
-            activeOpacity={0.82}
-            onPress={handleAbrirCameraEspaco}
-          >
-            <View style={styles.buttonContentRow}>
-              <Camera size={14} color={TOKENS.text} strokeWidth={1.5} />
-              <Text style={styles.businessCameraPillText}>
-                {cameraAberta
-                  ? 'Fechar câmara'
-                  : capturedSpaceImage
-                    ? 'Trocar foto'
-                    : 'Fotografar local'}
-              </Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        {/* Visor de Câmara sob demanda (desmontado quando fechado ou aba inativa) */}
-        {cameraAberta && isFocused && permission?.granted && (
-          <View style={styles.spaceCameraBox}>
-            <CameraView
-              ref={spaceCameraRef}
-              style={styles.spaceCameraPreview}
-              facing="back"
-            />
-            <View style={styles.spaceCameraActionsBar}>
-              <TouchableOpacity
-                style={[
-                  styles.primaryInvertedPill,
-                  aCapturarFotoEspaco && styles.controlDisabled,
-                ]}
-                activeOpacity={0.85}
-                onPress={handleTirarFotoEspaco}
-                disabled={aCapturarFotoEspaco}
-              >
-                {aCapturarFotoEspaco ? (
-                  <ActivityIndicator size="small" color={TOKENS.ground} />
-                ) : (
-                  <View style={styles.buttonContentRow}>
-                    <Camera size={15} color={TOKENS.ground} strokeWidth={1.75} />
-                    <Text style={styles.primaryInvertedPillText}>
-                      Capturar Foto do Local
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* Miniatura temporária da foto do espaço antes de guardar */}
-        {capturedSpaceImage && (
-          <View style={styles.capturedPreviewContainer}>
-            <Image
-              source={{ uri: capturedSpaceImage }}
-              style={styles.capturedPreviewThumb}
-              resizeMode="cover"
-              onError={() => setCapturedSpaceImage(null)}
-            />
-            <View style={styles.capturedPreviewTextCol}>
-              <View style={styles.capturedPreviewStatusRow}>
-                <Check
-                  size={14}
-                  color={TOKENS.pillPositiveInk}
-                  strokeWidth={1.75}
-                />
-                <Text style={styles.capturedPreviewTitle} numberOfLines={1}>
-                  Foto do local pronta
-                </Text>
-              </View>
-              <Text style={styles.capturedPreviewSubtitle} numberOfLines={1}>
-                Será salva no Mapa Visual em armazenamento permanente
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.capturedPreviewRemoveBtn}
-              onPress={() => setCapturedSpaceImage(null)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <TextInput
-          style={styles.input}
-          value={nomeEspaco}
-          onChangeText={setNomeEspaco}
-          placeholder={
-            currentParentId === null
-              ? isHome
-                ? 'Ex: Closet, Garagem, Despensa'
-                : 'Ex: Estoque Central, Galpão 01'
-              : 'Ex: Armário 1, Prateleira B, Caixa 2'
-          }
-          placeholderTextColor={TOKENS.faint}
-          maxLength={50}
-          returnKeyType="done"
-          onSubmitEditing={handleAdicionarEspaco}
-          editable={!aCriar}
-        />
-
-        <View style={styles.spaceFormButtonsRow}>
-          {editingSpace && (
-            <>
-              <TouchableOpacity
-                style={styles.secondaryPillButton}
-                activeOpacity={0.8}
-                onPress={handleCancelarEdicaoEspaco}
-                disabled={aCriar}
-              >
-                <X size={14} color={TOKENS.text} strokeWidth={1.5} />
-                <Text style={styles.secondaryPillButtonText}>Cancelar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.actionPillButtonDelete}
-                activeOpacity={0.8}
-                onPress={() => handleExcluirEspaco(editingSpace)}
-                disabled={aCriar}
-              >
-                <Trash2
-                  size={14}
-                  color={TOKENS.pillNegativeInk}
-                  strokeWidth={1.5}
-                />
-                <Text style={styles.actionPillTextDelete}>Excluir</Text>
-              </TouchableOpacity>
-            </>
-          )}
-
-          <TouchableOpacity
-            style={[
-              styles.primaryInvertedButton,
-              styles.spaceSubmitButtonFlex,
-              (!nomeValido || aCriar) && styles.controlDisabled,
-            ]}
-            activeOpacity={0.85}
-            onPress={handleAdicionarEspaco}
-            disabled={!nomeValido || aCriar}
-          >
-            {aCriar ? (
-              <ActivityIndicator color={TOKENS.ground} />
-            ) : (
-              <View style={styles.buttonContentRow}>
-                {editingSpace ? (
-                  <Check size={16} color={TOKENS.ground} strokeWidth={1.75} />
-                ) : (
-                  <Plus size={16} color={TOKENS.ground} strokeWidth={1.75} />
-                )}
-                <Text style={styles.primaryInvertedButtonText}>
-                  {editingSpace
-                    ? 'Guardar Alterações'
-                    : currentParentId === null
-                      ? 'Cadastrar Espaço'
-                      : 'Cadastrar Sub-espaço'}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <View style={styles.sectionToolbar}>
-        <Text style={styles.sectionHeading}>
-          {currentParentId === null
-            ? isHome
-              ? 'Cômodos principais'
-              : 'Espaços principais'
-            : `Divisões de ${espacoAtual?.name || ''}`}
-        </Text>
-        <Text style={styles.sectionCountText}>
-          {espacosFiltrados.length}{' '}
-          {espacosFiltrados.length === 1 ? 'local' : 'locais'}
-        </Text>
-      </View>
-
       <FlatList
         data={espacosFiltrados}
         keyExtractor={(item) => String(item.id)}
         refreshing={aCarregar}
         onRefresh={carregarEspacos}
-        contentContainerStyle={
-          espacosFiltrados.length === 0
-            ? styles.emptyContainer
-            : styles.listContent
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.listContent,
+          keyboardVisible && styles.scrollContentKeyboardActive,
+        ]}
+        ListHeaderComponent={
+          <View>
+            {currentParentId !== null && (
+              <View style={styles.drilldownBar}>
+                <TouchableOpacity
+                  style={styles.secondaryPillButton}
+                  activeOpacity={0.8}
+                  onPress={handleVoltar}
+                >
+                  <ArrowLeft size={15} color={TOKENS.text} strokeWidth={1.5} />
+                  <Text style={styles.secondaryPillButtonText}>Voltar</Text>
+                </TouchableOpacity>
+                <View style={styles.breadcrumbBox}>
+                  <Text style={styles.breadcrumbLabel}>Nível atual</Text>
+                  <Text style={styles.breadcrumbTitle} numberOfLines={1}>
+                    {espacoAtual ? formatarNomeEspaco(espacoAtual) : 'Sub-espaço'}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            <View style={styles.spaceFormCard}>
+              <View style={styles.spaceFormHeaderRow}>
+                <Text style={[styles.label, styles.spaceFormLabelFlex]}>
+                  {editingSpace
+                    ? `Editando local: "${editingSpace.name}"`
+                    : currentParentId === null
+                      ? isHome
+                        ? 'Novo cômodo principal (Mapa Visual)'
+                        : 'Novo espaço principal (ex: Estoque Central)'
+                      : `Novo sub-espaço em "${espacoAtual?.name || ''}"`}
+                </Text>
+
+                <TouchableOpacity
+                  style={styles.businessCameraPill}
+                  activeOpacity={0.82}
+                  onPress={handleAbrirCameraEspaco}
+                >
+                  <View style={styles.buttonContentRow}>
+                    <Camera size={14} color={TOKENS.text} strokeWidth={1.5} />
+                    <Text style={styles.businessCameraPillText}>
+                      {cameraAberta
+                        ? 'Fechar câmara'
+                        : capturedSpaceImage
+                          ? 'Trocar foto'
+                          : 'Fotografar local'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+
+              {/* Visor de Estúdio Óptico limpo com botão de captura abaixo do enquadramento */}
+              {cameraAberta && isFocused && permission?.granted && (
+                <View style={styles.spaceCameraSection}>
+                  <View style={styles.spaceCameraBox}>
+                    <CameraView
+                      ref={spaceCameraRef}
+                      style={styles.spaceCameraPreview}
+                      facing="back"
+                    />
+                    <View
+                      style={styles.opticalReticleLayer}
+                      pointerEvents="none"
+                    >
+                      <View
+                        style={[styles.opticalCorner, styles.opticalCornerTL]}
+                      />
+                      <View
+                        style={[styles.opticalCorner, styles.opticalCornerTR]}
+                      />
+                      <View
+                        style={[styles.opticalCorner, styles.opticalCornerBL]}
+                      />
+                      <View
+                        style={[styles.opticalCorner, styles.opticalCornerBR]}
+                      />
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.shutterDockPrimaryButton,
+                      aCapturarFotoEspaco && styles.controlDisabled,
+                    ]}
+                    activeOpacity={0.85}
+                    onPress={handleTirarFotoEspaco}
+                    disabled={aCapturarFotoEspaco}
+                  >
+                    <View style={styles.shutterEmblemOuter}>
+                      <View style={styles.shutterEmblemInner}>
+                        {aCapturarFotoEspaco ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={TOKENS.ground}
+                          />
+                        ) : (
+                          <Camera
+                            size={16}
+                            color={TOKENS.ground}
+                            strokeWidth={2}
+                          />
+                        )}
+                      </View>
+                    </View>
+                    <View style={styles.shutterDockTextCol}>
+                      <Text style={styles.shutterDockTitle}>
+                        {aCapturarFotoEspaco
+                          ? 'Capturando foto...'
+                          : 'Tirar Foto do Local'}
+                      </Text>
+                      <Text style={styles.shutterDockSubtitle}>
+                        Toque aqui para fotografar o espaço
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Miniatura estúdio sem corte da foto do espaço antes de guardar */}
+              {capturedSpaceImage && (
+                <View style={styles.capturedPreviewContainer}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() =>
+                      openLightbox?.(
+                        capturedSpaceImage,
+                        nomeEspaco.trim() || 'Foto do local'
+                      )
+                    }
+                  >
+                    <Image
+                      source={{ uri: capturedSpaceImage }}
+                      style={styles.capturedPreviewThumb}
+                      resizeMode="contain"
+                      onError={() => setCapturedSpaceImage(null)}
+                    />
+                  </TouchableOpacity>
+                  <View style={styles.capturedPreviewTextCol}>
+                    <View style={styles.capturedPreviewStatusRow}>
+                      <Check
+                        size={14}
+                        color={TOKENS.pillPositiveInk}
+                        strokeWidth={1.75}
+                      />
+                      <Text
+                        style={styles.capturedPreviewTitle}
+                        numberOfLines={1}
+                      >
+                        Foto do local pronta (toque para ampliar)
+                      </Text>
+                    </View>
+                    <Text
+                      style={styles.capturedPreviewSubtitle}
+                      numberOfLines={1}
+                    >
+                      Enquadramento integral sem corte no Mapa Visual
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.capturedPreviewRemoveBtn}
+                    onPress={() => setCapturedSpaceImage(null)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              <TextInput
+                style={styles.input}
+                value={nomeEspaco}
+                onChangeText={setNomeEspaco}
+                placeholder={
+                  currentParentId === null
+                    ? isHome
+                      ? 'Ex: Closet, Garagem, Despensa'
+                      : 'Ex: Estoque Central, Galpão 01'
+                    : 'Ex: Armário 1, Prateleira B, Caixa 2'
+                }
+                placeholderTextColor={TOKENS.faint}
+                maxLength={50}
+                returnKeyType="done"
+                onSubmitEditing={handleAdicionarEspaco}
+                editable={!aCriar}
+              />
+
+              <View style={styles.spaceFormButtonsRow}>
+                {editingSpace && (
+                  <>
+                    <TouchableOpacity
+                      style={styles.secondaryPillButton}
+                      activeOpacity={0.8}
+                      onPress={handleCancelarEdicaoEspaco}
+                      disabled={aCriar}
+                    >
+                      <X size={14} color={TOKENS.text} strokeWidth={1.5} />
+                      <Text style={styles.secondaryPillButtonText}>
+                        Cancelar
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.actionPillButtonDelete}
+                      activeOpacity={0.8}
+                      onPress={() => handleExcluirEspaco(editingSpace)}
+                      disabled={aCriar}
+                    >
+                      <Trash2
+                        size={14}
+                        color={TOKENS.pillNegativeInk}
+                        strokeWidth={1.5}
+                      />
+                      <Text style={styles.actionPillTextDelete}>Excluir</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                <TouchableOpacity
+                  style={[
+                    styles.primaryInvertedButton,
+                    styles.spaceSubmitButtonFlex,
+                    (!nomeValido || aCriar) && styles.controlDisabled,
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={handleAdicionarEspaco}
+                  disabled={!nomeValido || aCriar}
+                >
+                  {aCriar ? (
+                    <ActivityIndicator color={TOKENS.ground} />
+                  ) : (
+                    <View style={styles.buttonContentRow}>
+                      {editingSpace ? (
+                        <Check
+                          size={16}
+                          color={TOKENS.ground}
+                          strokeWidth={1.75}
+                        />
+                      ) : (
+                        <Plus
+                          size={16}
+                          color={TOKENS.ground}
+                          strokeWidth={1.75}
+                        />
+                      )}
+                      <Text style={styles.primaryInvertedButtonText}>
+                        {editingSpace
+                          ? 'Guardar Alterações'
+                          : currentParentId === null
+                            ? 'Cadastrar Espaço'
+                            : 'Cadastrar Sub-espaço'}
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.sectionToolbar}>
+              <Text style={styles.sectionHeading}>
+                {currentParentId === null
+                  ? isHome
+                    ? 'Cômodos principais'
+                    : 'Espaços principais'
+                  : `Divisões de ${espacoAtual?.name || ''}`}
+              </Text>
+              <Text style={styles.sectionCountText}>
+                {espacosFiltrados.length}{' '}
+                {espacosFiltrados.length === 1 ? 'local' : 'locais'}
+              </Text>
+            </View>
+          </View>
         }
         renderItem={({ item }) => {
           const qtdSubespacos = espacos.filter(
@@ -1314,41 +1534,43 @@ function EspacosScreen() {
               activeOpacity={0.82}
               onPress={() => setCurrentParentId(item.id)}
             >
-              {/* Mapa Visual do Espaço: Banner fotográfico com fallback resiliente onError */}
-              {item.image_uri ? (
-                imagemLocalFalhou ? (
-                  <View style={styles.spaceCardBannerFallback}>
-                    <CameraOff
-                      size={20}
-                      color={TOKENS.faint}
-                      strokeWidth={1.5}
-                    />
-                    <Text style={styles.homeCardFallbackText}>
-                      Foto do local indisponível
-                    </Text>
-                  </View>
-                ) : (
-                  <Image
-                    source={{ uri: item.image_uri }}
-                    style={styles.spaceCardBannerImage}
-                    resizeMode="cover"
-                    onError={() => handleSpaceImageError(item.id)}
-                  />
-                )
-              ) : null}
-
               <View style={styles.spaceCardBody}>
                 <View style={styles.spaceRowLeft}>
-                  {item.parent_id ? (
-                    <Folder size={18} color={TOKENS.muted} strokeWidth={1.5} />
-                  ) : isHome ? (
-                    <Home size={18} color={TOKENS.muted} strokeWidth={1.5} />
+                  {/* Miniatura de estúdio sem corte do espaço (toque amplia) ou ícone do local */}
+                  {item.image_uri && !imagemLocalFalhou ? (
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => openLightbox?.(item.image_uri, item.name)}
+                    >
+                      <Image
+                        source={{ uri: item.image_uri }}
+                        style={styles.spaceThumbImage}
+                        resizeMode="contain"
+                        onError={() => handleSpaceImageError(item.id)}
+                      />
+                    </TouchableOpacity>
                   ) : (
-                    <Warehouse
-                      size={18}
-                      color={TOKENS.muted}
-                      strokeWidth={1.5}
-                    />
+                    <View style={styles.spaceThumbFallback}>
+                      {item.parent_id ? (
+                        <Folder
+                          size={20}
+                          color={TOKENS.muted}
+                          strokeWidth={1.5}
+                        />
+                      ) : isHome ? (
+                        <Home
+                          size={20}
+                          color={TOKENS.muted}
+                          strokeWidth={1.5}
+                        />
+                      ) : (
+                        <Warehouse
+                          size={20}
+                          color={TOKENS.muted}
+                          strokeWidth={1.5}
+                        />
+                      )}
+                    </View>
                   )}
                   <View style={styles.spaceTextColumn}>
                     <Text style={styles.cardTitleText} numberOfLines={1}>
@@ -1356,8 +1578,8 @@ function EspacosScreen() {
                     </Text>
                     <Text style={styles.cardMetaText}>
                       {qtdSubespacos > 0
-                        ? `${qtdSubespacos} ${qtdSubespacos === 1 ? 'sub-divisão' : 'sub-divisões'} · Toque para entrar`
-                        : 'Toque para abrir ou adicionar sub-divisões'}
+                        ? `${qtdSubespacos} ${qtdSubespacos === 1 ? 'sub-divisão' : 'sub-divisões'} · Toque para abrir`
+                        : 'Toque para ver itens e divisões'}
                     </Text>
                   </View>
                 </View>
@@ -1404,10 +1626,146 @@ function EspacosScreen() {
                   ? isHome
                     ? 'Cadastre acima seu primeiro cômodo (ex: Quarto, Cozinha, Garagem).'
                     : 'Cadastre acima seu primeiro setor, galpão ou almoxarifado.'
-                  : 'Adicione prateleiras, armários ou caixas dentro deste local.'}
+                  : 'Você pode adicionar sub-divisões acima ou conferir os itens guardados abaixo.'}
               </Text>
             </View>
           )
+        }
+        ListFooterComponent={
+          currentParentId !== null ? (
+            <View style={styles.spaceSavedItemsSection}>
+              <View style={styles.spaceSavedItemsHeaderRow}>
+                <View style={styles.spaceSavedItemsTitleRow}>
+                  <Package size={16} color={TOKENS.text} strokeWidth={1.75} />
+                  <Text style={styles.sectionHeading}>
+                    Itens guardados neste local
+                  </Text>
+                </View>
+                <View style={styles.neutralDataPill}>
+                  <Text style={styles.neutralDataPillText}>
+                    {itensNoEspaco.length}{' '}
+                    {itensNoEspaco.length === 1 ? 'item' : 'itens'}
+                  </Text>
+                </View>
+              </View>
+
+              {itensNoEspaco.length === 0 ? (
+                <View style={styles.spaceSavedItemsEmptyCard}>
+                  <PackageOpen
+                    size={22}
+                    color={TOKENS.faint}
+                    strokeWidth={1.5}
+                  />
+                  <Text style={styles.spaceSavedItemsEmptyText}>
+                    Nenhum item guardado diretamente neste local
+                  </Text>
+                  <Text style={styles.spaceSavedItemsEmptySubtext}>
+                    Ao escanear ou fotografar um item na aba Scanner, escolha "
+                    {espacoAtual?.name || 'este local'}" para vê-lo listado aqui.
+                  </Text>
+                </View>
+              ) : (
+                itensNoEspaco.map((savedItem) => {
+                  const qtdItem = Number(savedItem.quantity ?? 1);
+                  const semEstoque = qtdItem === 0;
+                  const imgFalhou = Boolean(
+                    failedSpaceItemImageIds[savedItem.id]
+                  );
+
+                  return (
+                    <View
+                      key={String(savedItem.id)}
+                      style={styles.spaceSavedItemCard}
+                    >
+                      {savedItem.image_uri && !imgFalhou ? (
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={() =>
+                            openLightbox?.(savedItem.image_uri, savedItem.name)
+                          }
+                        >
+                          <Image
+                            source={{ uri: savedItem.image_uri }}
+                            style={styles.spaceSavedItemThumb}
+                            resizeMode="contain"
+                            onError={() =>
+                              handleSpaceItemImageError(savedItem.id)
+                            }
+                          />
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={styles.spaceSavedItemThumbFallback}>
+                          <Package
+                            size={18}
+                            color={TOKENS.faint}
+                            strokeWidth={1.5}
+                          />
+                        </View>
+                      )}
+
+                      <View style={styles.spaceSavedItemInfoCol}>
+                        <Text
+                          style={styles.spaceSavedItemTitle}
+                          numberOfLines={1}
+                        >
+                          {savedItem.name}
+                        </Text>
+                        {savedItem.barcode ? (
+                          <View style={styles.barcodeMetaPill}>
+                            <Barcode
+                              size={11}
+                              color={TOKENS.faint}
+                              strokeWidth={1.5}
+                            />
+                            <Text
+                              style={styles.barcodeMetaPillText}
+                              numberOfLines={1}
+                            >
+                              {savedItem.barcode}
+                            </Text>
+                          </View>
+                        ) : (
+                          <Text style={styles.cardMetaText}>
+                            Guardado em {espacoAtual?.name || 'local selecionado'}
+                          </Text>
+                        )}
+                      </View>
+
+                      <View
+                        style={[
+                          styles.quantityPill,
+                          semEstoque
+                            ? styles.quantityPillWarning
+                            : styles.quantityPillPositive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.quantityPillValue,
+                            semEstoque
+                              ? styles.quantityPillValueWarning
+                              : styles.quantityPillValuePositive,
+                          ]}
+                        >
+                          {qtdItem}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.quantityPillUnit,
+                            semEstoque
+                              ? styles.quantityPillValueWarning
+                              : styles.quantityPillValuePositive,
+                          ]}
+                        >
+                          un.
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          ) : null
         }
       />
     </KeyboardAvoidingView>
@@ -1418,8 +1776,12 @@ function EspacosScreen() {
    ABA 3: INVENTÁRIO (True-Black Flat + Busca + Optimistic UI)
    ========================================================== */
 function InventarioScreen({ refreshKey }) {
-  const { userProfile } = useContext(ProfileContext);
+  const { userProfile, openLightbox } = useContext(ProfileContext);
   const isHome = userProfile === 'home';
+  const keyboardVisible = useKeyboardVisible();
+  const [permission, requestPermission] = useCameraPermissions();
+  const isFocused = useIsFocused();
+  const inventoryCameraRef = useRef(null);
 
   const [items, setItems] = useState([]);
   const [spaces, setSpaces] = useState([]);
@@ -1436,6 +1798,9 @@ function InventarioScreen({ refreshKey }) {
   const [editingItemId, setEditingItemId] = useState(null);
   const [editingItemName, setEditingItemName] = useState('');
   const [editingItemSpaceId, setEditingItemSpaceId] = useState(null);
+  const [editingItemImageUri, setEditingItemImageUri] = useState(null);
+  const [inventoryCameraOpen, setInventoryCameraOpen] = useState(false);
+  const [aCapturarFotoItem, setACapturarFotoItem] = useState(false);
   const [aSalvarEdicaoItem, setASalvarEdicaoItem] = useState(false);
   const [failedImageIds, setFailedImageIds] = useState({});
 
@@ -1499,13 +1864,47 @@ function InventarioScreen({ refreshKey }) {
     setEditingItemId(item.id);
     setEditingItemName(String(item.name ?? ''));
     setEditingItemSpaceId(item.space_id ?? null);
+    setEditingItemImageUri(item.image_uri ?? null);
+    setInventoryCameraOpen(false);
   }, []);
 
   const handleCancelarEdicaoItem = useCallback(() => {
     setEditingItemId(null);
     setEditingItemName('');
     setEditingItemSpaceId(null);
+    setEditingItemImageUri(null);
+    setInventoryCameraOpen(false);
   }, []);
+
+  const handleAbrirCameraItem = useCallback(async () => {
+    if (!permission?.granted) {
+      const res = await requestPermission();
+      if (!res?.granted) return;
+    }
+    setInventoryCameraOpen((prev) => !prev);
+  }, [permission, requestPermission]);
+
+  const handleCapturarFotoItem = useCallback(async () => {
+    if (aCapturarFotoItem || !inventoryCameraRef.current?.takePictureAsync) {
+      return;
+    }
+    setACapturarFotoItem(true);
+    try {
+      const foto = await inventoryCameraRef.current.takePictureAsync({
+        quality: 0.65,
+      });
+      if (foto?.uri) {
+        setEditingItemImageUri(foto.uri);
+        setInventoryCameraOpen(false);
+        Vibration.vibrate(80);
+      }
+    } catch (error) {
+      console.error('Erro ao fotografar item no inventário:', error);
+      Alert.alert('Erro na câmera', 'Não foi possível capturar a foto.');
+    } finally {
+      setACapturarFotoItem(false);
+    }
+  }, [aCapturarFotoItem]);
 
   const handleSalvarEdicaoItem = useCallback(
     async (item) => {
@@ -1517,8 +1916,16 @@ function InventarioScreen({ refreshKey }) {
         await updateItemDetails(item.id, {
           name: nomeLimpo,
           space_id: editingItemSpaceId,
+          image_uri: editingItemImageUri,
+        });
+        setFailedImageIds((prev) => {
+          if (!prev[item.id]) return prev;
+          const copia = { ...prev };
+          delete copia[item.id];
+          return copia;
         });
         setEditingItemId(null);
+        setInventoryCameraOpen(false);
         Keyboard.dismiss();
         await carregarItens(searchQuery);
       } catch (error) {
@@ -1531,6 +1938,7 @@ function InventarioScreen({ refreshKey }) {
     [
       aSalvarEdicaoItem,
       carregarItens,
+      editingItemImageUri,
       editingItemName,
       editingItemSpaceId,
       searchQuery,
@@ -1699,7 +2107,11 @@ function InventarioScreen({ refreshKey }) {
   });
 
   return (
-    <View style={styles.screen}>
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 76}
+    >
       {/* KPI Strip (Padrão 'true-black-flat': container único dividido por hairline 1px #161616) */}
       <View style={styles.kpiStripWrapper}>
         <View style={styles.kpiStrip}>
@@ -2059,7 +2471,12 @@ function InventarioScreen({ refreshKey }) {
           ) : null
         }
         contentContainerStyle={
-          displayedItems.length === 0 ? styles.emptyContainer : styles.listContent
+          displayedItems.length === 0
+            ? styles.emptyContainer
+            : [
+                styles.listContent,
+                keyboardVisible && styles.scrollContentKeyboardActive,
+              ]
         }
         renderItem={({ item }) => {
           const qtd = Number(item.quantity ?? 1);
@@ -2069,51 +2486,42 @@ function InventarioScreen({ refreshKey }) {
 
           return (
             <View style={styles.inventoryCard}>
-              {/* PERFIL HOME: Imagem de destaque de ponta a ponta no topo do card com fallback resiliente onError */}
-              {isHome && item.image_uri ? (
-                imagemFalhou ? (
-                  <View style={styles.homeCardCoverFallback}>
-                    <CameraOff
-                      size={22}
-                      color={TOKENS.faint}
-                      strokeWidth={1.5}
-                    />
-                    <Text style={styles.homeCardFallbackText}>
-                      Imagem local indisponível
-                    </Text>
-                  </View>
-                ) : (
-                  <Image
-                    source={{ uri: item.image_uri }}
-                    style={styles.homeCardCoverImage}
-                    resizeMode="cover"
-                    onError={() => handleImageError(item.id)}
-                  />
-                )
-              ) : null}
-
               <View style={styles.inventoryCardBody}>
-                {/* Linha Superior: Avatar B2B (quando aplicável) + Identificação + Metadados + Pílula de Quantidade */}
+                {/* Linha Superior: Miniatura Estúdio sem corte (toque amplia) + Identificação + Metadados + Pílula de Quantidade */}
                 <View style={styles.inventoryCardTopRow}>
-                  {/* PERFIL BUSINESS: Miniatura circular (avatar 44x44) à esquerda do título com fallback onError */}
-                  {!isHome && item.image_uri ? (
+                  {item.image_uri ? (
                     imagemFalhou ? (
-                      <View style={styles.businessAvatarFallback}>
-                        <Package
-                          size={18}
+                      <View style={styles.itemThumbFallback}>
+                        <CameraOff
+                          size={20}
                           color={TOKENS.faint}
                           strokeWidth={1.5}
                         />
                       </View>
                     ) : (
-                      <Image
-                        source={{ uri: item.image_uri }}
-                        style={styles.businessAvatarImage}
-                        resizeMode="cover"
-                        onError={() => handleImageError(item.id)}
-                      />
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() =>
+                          openLightbox?.(item.image_uri, item.name)
+                        }
+                      >
+                        <Image
+                          source={{ uri: item.image_uri }}
+                          style={styles.itemThumbImage}
+                          resizeMode="contain"
+                          onError={() => handleImageError(item.id)}
+                        />
+                      </TouchableOpacity>
                     )
-                  ) : null}
+                  ) : (
+                    <View style={styles.itemThumbFallback}>
+                      <Package
+                        size={20}
+                        color={TOKENS.faint}
+                        strokeWidth={1.5}
+                      />
+                    </View>
+                  )}
 
                   <View style={styles.itemInfo}>
                     <Text style={styles.cardTitleText} numberOfLines={1}>
@@ -2199,12 +2607,154 @@ function InventarioScreen({ refreshKey }) {
                   </View>
                 </View>
 
-                {/* Editor Inline Rápido: Renomear Produto ou Transferir de Setor/Galpão */}
+                {/* Editor Inline Rápido: Renomear Produto, Fotografar ou Transferir de Setor/Galpão */}
                 {editingItemId === item.id && (
                   <View style={styles.inlineEditItemPanel}>
-                    <Text style={styles.inlineEditLabel}>
-                      Editar nome ou transferir de local
-                    </Text>
+                    <View style={styles.spaceFormHeaderRow}>
+                      <Text style={styles.inlineEditLabel}>
+                        Editar produto, foto ou local
+                      </Text>
+
+                      <TouchableOpacity
+                        style={styles.businessCameraPill}
+                        activeOpacity={0.82}
+                        onPress={handleAbrirCameraItem}
+                      >
+                        <View style={styles.buttonContentRow}>
+                          <Camera
+                            size={13}
+                            color={TOKENS.text}
+                            strokeWidth={1.5}
+                          />
+                          <Text style={styles.businessCameraPillText}>
+                            {inventoryCameraOpen
+                              ? 'Fechar câmera'
+                              : editingItemImageUri
+                                ? 'Trocar foto'
+                                : 'Fotografar'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+
+                    {inventoryCameraOpen && isFocused && permission?.granted && (
+                      <View style={styles.spaceCameraSection}>
+                        <View style={styles.spaceCameraBox}>
+                          <CameraView
+                            ref={inventoryCameraRef}
+                            style={styles.spaceCameraPreview}
+                            facing="back"
+                          />
+                          <View
+                            style={styles.opticalReticleLayer}
+                            pointerEvents="none"
+                          >
+                            <View
+                              style={[
+                                styles.opticalCorner,
+                                styles.opticalCornerTL,
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.opticalCorner,
+                                styles.opticalCornerTR,
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.opticalCorner,
+                                styles.opticalCornerBL,
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.opticalCorner,
+                                styles.opticalCornerBR,
+                              ]}
+                            />
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={[
+                            styles.shutterDockPrimaryButton,
+                            aCapturarFotoItem && styles.controlDisabled,
+                          ]}
+                          activeOpacity={0.85}
+                          onPress={handleCapturarFotoItem}
+                          disabled={aCapturarFotoItem}
+                        >
+                          <View style={styles.shutterEmblemOuter}>
+                            <View style={styles.shutterEmblemInner}>
+                              {aCapturarFotoItem ? (
+                                <ActivityIndicator
+                                  size="small"
+                                  color={TOKENS.ground}
+                                />
+                              ) : (
+                                <Camera
+                                  size={16}
+                                  color={TOKENS.ground}
+                                  strokeWidth={2}
+                                />
+                              )}
+                            </View>
+                          </View>
+                          <View style={styles.shutterDockTextCol}>
+                            <Text style={styles.shutterDockTitle}>
+                              {aCapturarFotoItem
+                                ? 'Capturando foto...'
+                                : 'Tirar Foto do Produto'}
+                            </Text>
+                            <Text style={styles.shutterDockSubtitle}>
+                              Toque aqui para fotografar o produto
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {editingItemImageUri && (
+                      <View style={styles.capturedPreviewContainer}>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={() =>
+                            openLightbox?.(
+                              editingItemImageUri,
+                              editingItemName || item.name
+                            )
+                          }
+                        >
+                          <Image
+                            source={{ uri: editingItemImageUri }}
+                            style={styles.capturedPreviewThumb}
+                            resizeMode="contain"
+                          />
+                        </TouchableOpacity>
+                        <View style={styles.capturedPreviewTextCol}>
+                          <Text
+                            style={styles.capturedPreviewTitle}
+                            numberOfLines={1}
+                          >
+                            Fotografia vinculada (toque para ampliar)
+                          </Text>
+                          <Text
+                            style={styles.capturedPreviewSubtitle}
+                            numberOfLines={1}
+                          >
+                            Enquadramento integral sem corte
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.capturedPreviewRemoveBtn}
+                          onPress={() => setEditingItemImageUri(null)}
+                        >
+                          <X size={16} color={TOKENS.muted} strokeWidth={1.5} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
                     <TextInput
                       style={styles.input}
                       value={editingItemName}
@@ -2360,7 +2910,7 @@ function InventarioScreen({ refreshKey }) {
           )
         }
       />
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -2371,9 +2921,20 @@ export default function App() {
   const [userProfile, setUserProfile] = useState(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [inventoryRefreshKey, setInventoryRefreshKey] = useState(0);
+  const [lightboxImage, setLightboxImage] = useState(null);
 
   const handleInventoryUpdated = useCallback(() => {
     setInventoryRefreshKey((prev) => prev + 1);
+  }, []);
+
+  const openLightbox = useCallback((uri, title = '') => {
+    if (uri) {
+      setLightboxImage({ uri, title });
+    }
+  }, []);
+
+  const closeLightbox = useCallback(() => {
+    setLightboxImage(null);
   }, []);
 
   useEffect(() => {
@@ -2432,7 +2993,7 @@ export default function App() {
 
   return (
     <ProfileContext.Provider
-      value={{ userProfile, selectProfile, resetProfile }}
+      value={{ userProfile, selectProfile, resetProfile, openLightbox }}
     >
       <NavigationContainer theme={TEMA}>
         <StatusBar style="light" />
@@ -2519,6 +3080,44 @@ export default function App() {
           </Tab.Screen>
         </Tab.Navigator>
       </NavigationContainer>
+
+      {/* Lightbox Modal de Tela Cheia para inspeção visual de fotos sem corte */}
+      <Modal
+        visible={Boolean(lightboxImage)}
+        transparent
+        animationType="fade"
+        onRequestClose={closeLightbox}
+      >
+        <View style={styles.lightboxBackdrop}>
+          <View style={styles.lightboxTopBar}>
+            <Text style={styles.lightboxTitle} numberOfLines={1}>
+              {lightboxImage?.title || 'Visualização de Foto'}
+            </Text>
+            <TouchableOpacity
+              style={styles.secondaryPillButton}
+              activeOpacity={0.8}
+              onPress={closeLightbox}
+            >
+              <X size={15} color={TOKENS.text} strokeWidth={1.75} />
+              <Text style={styles.secondaryPillButtonText}>Fechar</Text>
+            </TouchableOpacity>
+          </View>
+
+          {lightboxImage?.uri ? (
+            <TouchableOpacity
+              style={styles.lightboxImageWrapper}
+              activeOpacity={1}
+              onPress={closeLightbox}
+            >
+              <Image
+                source={{ uri: lightboxImage.uri }}
+                style={styles.lightboxImage}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </Modal>
     </ProfileContext.Provider>
   );
 }
@@ -2636,14 +3235,208 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // Scanner e Câmera
+  // Scanner e Câmera (Visor Óptico Limpo + Botão de Captura Embaixo)
+  scannerScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 24,
+  },
+  scrollContentKeyboardActive: {
+    paddingBottom: 150,
+  },
+  cameraStageCard: {
+    marginHorizontal: 14,
+    marginTop: 10,
+    marginBottom: 12,
+    borderRadius: TOKENS.radiusCard,
+    backgroundColor: TOKENS.surface,
+    padding: 12,
+    gap: 10,
+  },
   cameraContainer: {
-    flex: 1,
-    backgroundColor: TOKENS.ground,
+    height: 224,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
   },
   activeCameraWrapper: {
     flex: 1,
     position: 'relative',
+  },
+  cameraShutterDock: {
+    width: '100%',
+  },
+  shutterDockPrimaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: TOKENS.raised,
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#383838',
+  },
+  shutterEmblemOuter: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    padding: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterEmblemInner: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterDockTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  shutterDockTitle: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '700',
+  },
+  shutterDockSubtitle: {
+    color: TOKENS.muted,
+    fontSize: 12,
+  },
+  capturedDockActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  capturedDockSecondaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: TOKENS.raised,
+  },
+  capturedDockSecondaryBtnText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  capturedDockPrimaryBtn: {
+    flex: 1.2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: TOKENS.text,
+  },
+  capturedDockPrimaryBtnText: {
+    color: TOKENS.ground,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '700',
+  },
+  opticalReticleLayer: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    bottom: 14,
+    left: 14,
+  },
+  opticalCorner: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderColor: 'rgba(255, 255, 255, 0.42)',
+  },
+  opticalCornerTL: {
+    top: 0,
+    left: 0,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+    borderTopLeftRadius: 6,
+  },
+  opticalCornerTR: {
+    top: 0,
+    right: 0,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderTopRightRadius: 6,
+  },
+  opticalCornerBL: {
+    bottom: 0,
+    left: 0,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderBottomLeftRadius: 6,
+  },
+  opticalCornerBR: {
+    bottom: 0,
+    right: 0,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+    borderBottomRightRadius: 6,
+  },
+  capturedStageWrapper: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    position: 'relative',
+  },
+  capturedStageTouch: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 8,
+  },
+  capturedStageImage: {
+    width: '100%',
+    height: '100%',
+  },
+  capturedStageTopBar: {
+    position: 'absolute',
+    top: 10,
+    left: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  capturedStageBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.pillPositiveBg,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: TOKENS.radiusControl,
+  },
+  capturedStageBadgeText: {
+    color: TOKENS.pillPositiveInk,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+  },
+  retakeStagePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.raised,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: TOKENS.radiusControl,
+  },
+  retakeStagePillText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
   },
   yoloEngineStatusPill: {
     position: 'absolute',
@@ -2695,16 +3488,45 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   scannerSheet: {
+    marginHorizontal: 14,
+    borderRadius: TOKENS.radiusCard,
     padding: TOKENS.pad,
     backgroundColor: TOKENS.surface,
+  },
+  stepHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  stepNumberBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    backgroundColor: TOKENS.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepNumberBadgeText: {
+    color: TOKENS.accent,
+    fontSize: 12,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  stepHeaderTitle: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '600',
+    flex: 1,
   },
   homeCaptureSection: {
     marginBottom: 4,
   },
   capturePhotoHeroButton: {
     backgroundColor: TOKENS.text,
-    minHeight: 48,
-    paddingVertical: 12,
+    minHeight: 46,
+    paddingVertical: 11,
     paddingHorizontal: 20,
     borderRadius: TOKENS.radiusControl,
     alignItems: 'center',
@@ -2713,15 +3535,36 @@ const styles = StyleSheet.create({
   },
   capturePhotoHeroButtonText: {
     color: TOKENS.ground,
-    fontSize: TOKENS.fsSection,
+    fontSize: TOKENS.fsBody,
     fontWeight: '600',
   },
   businessTopCaptureBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     gap: 8,
     marginBottom: TOKENS.gap,
+  },
+  businessCaptureFullButton: {
+    flex: 1,
+  },
+  scannedBarcodeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: TOKENS.pillPositiveBg,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: TOKENS.gap,
+  },
+  scannedBarcodeTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  scannedBarcodeSubtext: {
+    color: TOKENS.muted,
+    fontSize: 12,
   },
   scannedBarcodePillFlex: {
     flex: 1,
@@ -2756,10 +3599,12 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   capturedPreviewThumb: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: TOKENS.surface,
+    width: 60,
+    height: 60,
+    borderRadius: 14,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#262626',
   },
   capturedPreviewTextCol: {
     flex: 1,
@@ -2794,7 +3639,32 @@ const styles = StyleSheet.create({
     fontSize: TOKENS.fsSmall,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
+  },
+  qtyStepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  qtyStepButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: TOKENS.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qtyStepButtonPrimary: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: TOKENS.text,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qtyStepperInput: {
     flex: 1,
+    marginBottom: 0,
   },
   inputRow: {
     flexDirection: 'row',
@@ -2997,7 +3867,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   spaceFormCard: {
-    marginHorizontal: 16,
     marginTop: TOKENS.gap,
     padding: TOKENS.pad,
     backgroundColor: TOKENS.surface,
@@ -3014,12 +3883,17 @@ const styles = StyleSheet.create({
     flex: 1,
     marginBottom: 0,
   },
+  spaceCameraSection: {
+    marginVertical: 10,
+    gap: 10,
+  },
   spaceCameraBox: {
-    height: 196,
-    borderRadius: 16,
+    height: 210,
+    borderRadius: 18,
     overflow: 'hidden',
-    backgroundColor: TOKENS.ground,
-    marginBottom: TOKENS.gap,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
     position: 'relative',
   },
   spaceCameraPreview: {
@@ -3044,9 +3918,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 18,
+    paddingHorizontal: 4,
     paddingTop: 18,
-    paddingBottom: 6,
+    paddingBottom: 10,
   },
   sectionHeading: {
     color: TOKENS.text,
@@ -3064,24 +3938,99 @@ const styles = StyleSheet.create({
     marginBottom: TOKENS.gap,
     overflow: 'hidden',
   },
-  spaceCardBannerImage: {
-    width: '100%',
-    height: 148,
-    backgroundColor: TOKENS.raised,
+  spaceThumbImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#262626',
   },
-  spaceCardBannerFallback: {
-    width: '100%',
-    height: 112,
+  spaceThumbFallback: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
     backgroundColor: TOKENS.raised,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
   },
   spaceCardBody: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 18,
+    padding: 16,
+  },
+  spaceSavedItemsSection: {
+    marginTop: 12,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: TOKENS.rule,
+    gap: 10,
+  },
+  spaceSavedItemsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    marginBottom: 2,
+  },
+  spaceSavedItemsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  spaceSavedItemsEmptyCard: {
+    backgroundColor: TOKENS.surface,
+    borderRadius: TOKENS.radiusCard,
+    padding: 20,
+    alignItems: 'center',
+    gap: 6,
+  },
+  spaceSavedItemsEmptyText: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  spaceSavedItemsEmptySubtext: {
+    color: TOKENS.faint,
+    fontSize: TOKENS.fsSmall,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  spaceSavedItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: TOKENS.surface,
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
+  },
+  spaceSavedItemThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#262626',
+  },
+  spaceSavedItemThumbFallback: {
+    width: 52,
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: TOKENS.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  spaceSavedItemInfoCol: {
+    flex: 1,
+    gap: 4,
+  },
+  spaceSavedItemTitle: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsBody,
+    fontWeight: '600',
   },
   spacePhotoActionPill: {
     flexDirection: 'row',
@@ -3338,6 +4287,11 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 24,
   },
+  listContentWithKeyboard: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 150,
+  },
   emptyContainer: {
     flexGrow: 1,
     justifyContent: 'center',
@@ -3352,34 +4306,18 @@ const styles = StyleSheet.create({
   inventoryCardBody: {
     padding: TOKENS.pad,
   },
-  homeCardCoverImage: {
-    width: '100%',
-    height: 176,
-    backgroundColor: TOKENS.raised,
+  itemThumbImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#262626',
   },
-  homeCardCoverFallback: {
-    width: '100%',
-    height: 132,
-    backgroundColor: TOKENS.raised,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  homeCardFallbackText: {
-    color: TOKENS.faint,
-    fontSize: TOKENS.fsSmall,
-    fontWeight: '500',
-  },
-  businessAvatarImage: {
-    width: 44,
-    height: 44,
-    borderRadius: TOKENS.radiusControl,
-    backgroundColor: TOKENS.raised,
-  },
-  businessAvatarFallback: {
-    width: 44,
-    height: 44,
-    borderRadius: TOKENS.radiusControl,
+  itemThumbFallback: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
     backgroundColor: TOKENS.raised,
     alignItems: 'center',
     justifyContent: 'center',
@@ -3484,6 +4422,39 @@ const styles = StyleSheet.create({
     fontSize: TOKENS.fsSmall,
     fontWeight: '600',
   },
+  inlineIconButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  chipsList: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: TOKENS.raised,
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: TOKENS.radiusControl,
+  },
+  chipActive: {
+    backgroundColor: TOKENS.text,
+  },
+  chipText: {
+    color: TOKENS.muted,
+    fontSize: TOKENS.fsSmall,
+    fontWeight: '500',
+  },
+  chipTextActive: {
+    color: TOKENS.ground,
+    fontWeight: '600',
+  },
   inlineEditActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3572,5 +4543,43 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 280,
     lineHeight: 20,
+  },
+
+  // Lightbox Modal de Tela Cheia (visualização sem cortes de qualquer foto do inventário/espaços)
+  lightboxBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.94)',
+    paddingTop: 48,
+    paddingBottom: 32,
+    paddingHorizontal: 16,
+    justifyContent: 'space-between',
+  },
+  lightboxTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+  lightboxTitle: {
+    color: TOKENS.text,
+    fontSize: TOKENS.fsSection,
+    fontWeight: '600',
+    flex: 1,
+  },
+  lightboxImageWrapper: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#262626',
+    overflow: 'hidden',
+    padding: 12,
+  },
+  lightboxImage: {
+    width: '100%',
+    height: '100%',
   },
 });
